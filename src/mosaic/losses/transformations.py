@@ -1,11 +1,12 @@
 # Simple transformations of loss functions
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Bool, Float, Int
-import jax
-import equinox as eqx
 
-from ..common import TOKENS, LinearCombination, LossTerm
+from mosaic.common import TOKENS, LinearCombination, LossTerm
+from mosaic.losses.structure_prediction import AbstractStructureOutput
 
 
 class NoCys(LossTerm):
@@ -35,23 +36,23 @@ class SoftClip(LossTerm):
         Soft clips a loss function using an ELU transformation.
         Useful for loss functions that might behave badly when over-optimized.
         For example, optimizing raw ESM2 psuedolikelihood often gives homopolymers
-    
+
     Properties:
     - loss: LossTerm
     - l: lower bound
     - alpha: sharpness of clipping
     - name: name of the clipped loss in the aux dict
     """
+
     loss: LossTerm
-    l: float =  eqx.field(converter=jnp.array)
+    l: float = eqx.field(converter=jnp.array)
     alpha: float = eqx.field(converter=jnp.array)
     name: str = "elu"
 
     def __call__(self, *args, key, **kwargs):
         v, aux = self.loss(*args, key=key, **kwargs)
-        z = jax.nn.elu((v - self.l)*self.alpha)
+        z = jax.nn.elu((v - self.l) * self.alpha)
         return z, {"": aux, self.name: z}
-
 
 
 class ClippedLoss(LossTerm):
@@ -106,7 +107,9 @@ class SetPositions(LossTerm):
     @staticmethod
     def from_sequence(wildtype: str, loss: LossTerm | LinearCombination):
         """Fix standard amino acids but allow variability at positions with 'X'"""
-        wildtype_tokens = jnp.array([TOKENS.index(AA) if AA != "X" else -1 for AA in wildtype])
+        wildtype_tokens = jnp.array(
+            [TOKENS.index(AA) if AA != "X" else -1 for AA in wildtype]
+        )
         variable_positions = jnp.array(
             [i for i, AA in enumerate(wildtype) if AA == "X"]
         )
@@ -180,9 +183,7 @@ def norm_gradient_fwd(x):
 def norm_gradient_bwd(_, g):
     g = g - g.mean(axis=-1, keepdims=True)
     norm = jnp.sqrt((g**2).sum() + 1e-8)
-    return (
-        g / norm,
-    )
+    return (g / norm,)
 
 
 norm_gradient.defvjp(norm_gradient_fwd, norm_gradient_bwd)
@@ -193,3 +194,68 @@ class NormedGradient(LossTerm):
 
     def __call__(self, sequence, *args, **kwargs):
         return self.loss(norm_gradient(sequence), *args, **kwargs)
+
+
+class CroppedStructureOutput(AbstractStructureOutput):
+    """Wraps an AbstractStructureOutput, subsetting all properties to a set of residue indices."""
+
+    def __init__(self, output: AbstractStructureOutput, indices):
+        self._output = output
+        self._indices = jnp.asarray(indices)
+
+    @property
+    def distogram_bins(self):
+        return self._output.distogram_bins
+
+    @property
+    def distogram_logits(self):
+        idx = self._indices
+        return self._output.distogram_logits[jnp.ix_(idx, idx)]
+
+    @property
+    def plddt(self):
+        return self._output.plddt[self._indices]
+
+    @property
+    def pae(self):
+        idx = self._indices
+        return self._output.pae[jnp.ix_(idx, idx)]
+
+    @property
+    def pae_logits(self):
+        idx = self._indices
+        return self._output.pae_logits[jnp.ix_(idx, idx)]
+
+    @property
+    def pae_bins(self):
+        return self._output.pae_bins
+
+    @property
+    def backbone_coordinates(self):
+        return self._output.backbone_coordinates[self._indices]
+
+    @property
+    def full_sequence(self):
+        return self._output.full_sequence[self._indices]
+
+    @property
+    def asym_id(self):
+        return self._output.asym_id[self._indices]
+
+    @property
+    def residue_idx(self):
+        return self._output.residue_idx[self._indices]
+
+
+class CroppedLoss(LossTerm):
+    """Wraps a loss term, cropping the structure output to given residue indices before evaluating."""
+
+    loss: LossTerm
+    indices: list[int]
+
+    def __call__(self, sequence, output, *, key):
+        binder_len = sequence.shape[0]
+        binder_indices = [i for i in self.indices if i < binder_len]
+        subset_sequence = sequence[jnp.array(binder_indices)]
+        subset_output = CroppedStructureOutput(output, self.indices)
+        return self.loss(subset_sequence, subset_output, key=key)
