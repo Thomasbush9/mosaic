@@ -30,7 +30,15 @@ TARGET="${TARGET:-/work/PDL1.pdb}"
 BINDER_LENGTH="${BINDER_LENGTH:-80}"
 DESIGN_SCRIPT="${DESIGN_SCRIPT:-/opt/mosaic/run_design.py}"
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# NOT $(dirname $BASH_SOURCE): SLURM copies the batch script into its spool
+# directory before running it, so BASH_SOURCE points at /var/slurmd/spool/... and
+# mosaic-exec.sh is not next to it.
+MOSAIC_REPO="${MOSAIC_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+HERE="$MOSAIC_REPO/singularity"
+if [[ ! -x "$HERE/mosaic-exec.sh" ]]; then
+    echo "error: $HERE/mosaic-exec.sh not found — set MOSAIC_REPO to the repo root" >&2
+    exit 66
+fi
 mkdir -p "$MOSAIC_SCRATCH"
 
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"

@@ -10,4 +10,11 @@ wheels/
 .venv
 
 .envrc
-uv.lock
+
+# SLURM job output from singularity/*.sbatch
+logs/
+
+# uv.lock is deliberately tracked on this fork (upstream ignores it). Nine
+# dependencies are git-sourced, so without a lock every container build
+# re-resolves them at HEAD and images are not reproducible.
+# See singularity/mosaic.def.

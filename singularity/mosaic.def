@@ -25,6 +25,11 @@ From: ubuntu:24.04
 #     shells out to the binary to fetch checkpoints. Without it you get a
 #     zero-byte file and an opaque unpickling error much later.
 #
+#   * build-essential is needed at build time even though nothing here is
+#     compiled on purpose: opendde pulls in scikit-learn-extra 0.3.0, which
+#     publishes no cp312 wheel, so uv compiles it from the sdist. It is left
+#     installed rather than purged — ~200 MB against multi-GB CUDA wheels.
+#
 #   * NO model weights are baked in. They live on shared storage and are bound
 #     at runtime — see singularity/README.md for the layout and why.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,6 +44,7 @@ From: ubuntu:24.04
     # Copy the working tree explicitly rather than `. /opt/mosaic` so the
     # 70 MB .git directory and any local .venv stay out of the image.
     pyproject.toml   /opt/mosaic/pyproject.toml
+    uv.lock          /opt/mosaic/uv.lock
     README.md        /opt/mosaic/README.md
     stability.eqx    /opt/mosaic/stability.eqx
     src              /opt/mosaic/src
@@ -55,6 +61,7 @@ From: ubuntu:24.04
         curl \
         git \
         wget \
+        build-essential \
         python3.12 \
         python3.12-venv \
         python3.12-dev \
@@ -70,16 +77,14 @@ From: ubuntu:24.04
     # Needs network: nine dependencies are git-sourced from GitHub, plus PyPI
     # and download.pytorch.org. Build on a login node, not a compute node.
     #
-    # Upstream gitignores uv.lock, so a plain `uv sync` re-resolves those nine
-    # repos at HEAD every time. Building here freezes them into the image —
-    # extract the generated lock afterwards and commit it to the fork:
+    # --frozen pins those nine repos to the commits in uv.lock, which this fork
+    # tracks even though upstream gitignores it. Without it every build resolves
+    # them at HEAD and no two images are alike. To intentionally take newer
+    # upstream commits, regenerate the lock outside the container and rebuild:
     #
-    #   singularity exec mosaic.sif cat /opt/mosaic/uv.lock > uv.lock
-    #
-    # Once committed, add it to %files above and swap the line below for
-    # `uv sync --frozen --group jax-cuda` to get byte-identical rebuilds.
+    #   uv lock --upgrade && singularity build --fakeroot ...
     cd /opt/mosaic
-    uv sync --group jax-cuda --python /usr/bin/python3.12
+    uv sync --frozen --group jax-cuda --python /usr/bin/python3.12
 
     # ── runtime mount points ─────────────────────────────────────────────────
     # Only two absolute paths are needed. The weight caches are NOT mounted at
