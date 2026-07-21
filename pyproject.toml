@@ -56,7 +56,8 @@ jax-cpu = [
   "jax[cpu]",
 ]
 jax-cuda = [
-  "jax[cuda]",
+  # Cluster driver tops out at CUDA 12.9.1 — do not use jax[cuda] / jax[cuda13].
+  "jax[cuda12]",
 ]
 jax-tpu= [
   "jax[tpu]",

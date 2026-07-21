@@ -1,0 +1,161 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# ─────────────────────────────────────────────────────────────────────────────
+# mosaic — single-GPU JAX protein design, packaged for SLURM + Singularity.
+#
+# Design notes (the non-obvious choices, so review is quick):
+#
+#   * Base is plain Ubuntu, NOT nvidia/cuda. `jax[cuda12]` ships its own CUDA
+#     libraries as pip wheels, and `singularity exec --nv` injects the host
+#     driver. A CUDA base image would duplicate ~3 GB for nothing.
+#
+#   * Pin `jax[cuda12]`, not `jax[cuda]` / `jax[cuda13]`. The cluster driver
+#     reports CUDA ≤12.9.1; CUDA-13 wheels need driver ≥580 and will fail here.
+#
+#   * 24.04 ships Python 3.12 natively, which is what pyproject.toml pins
+#     (`requires-python = "==3.12.*"`). No deadsnakes PPA, no uv-managed
+#     interpreter.
+#
+#   * torch is pinned to the CPU wheel index upstream and is only used to load
+#     checkpoints before conversion to Equinox/JAX. It never touches the GPU,
+#     so nothing here needs a GPU-enabled torch.
+#
+#   * wget is a hard runtime dependency, not a convenience: models/boltzgen.py
+#     shells out to the binary to fetch checkpoints. Without it you get a
+#     zero-byte file and an opaque unpickling error much later.
+#
+#   * NO model weights are baked in. They live on shared storage and are bound
+#     at runtime — see singularity/README.md for the layout and why.
+# ─────────────────────────────────────────────────────────────────────────────
+
+%labels
+    Maintainer   Thomas Bush
+    Upstream     https://github.com/escalante-bio/mosaic
+    Purpose      Multi-objective protein design (JAX), one GPU per job
+    JAXBackend   cuda12
+
+%files
+    # Copy the working tree explicitly rather than `. /opt/mosaic` so the
+    # 70 MB .git directory and any local .venv stay out of the image.
+    pyproject.toml   /opt/mosaic/pyproject.toml
+    README.md        /opt/mosaic/README.md
+    stability.eqx    /opt/mosaic/stability.eqx
+    src              /opt/mosaic/src
+    examples         /opt/mosaic/examples
+    singularity      /opt/mosaic/singularity
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        wget \
+        python3.12 \
+        python3.12-venv \
+        python3.12-dev \
+        libgomp1
+    rm -rf /var/lib/apt/lists/*
+
+    # ── uv ───────────────────────────────────────────────────────────────────
+    export UV_INSTALL_DIR=/usr/local/bin
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    uv --version
+
+    # ── dependencies ─────────────────────────────────────────────────────────
+    # Needs network: nine dependencies are git-sourced from GitHub, plus PyPI
+    # and download.pytorch.org. Build on a login node, not a compute node.
+    #
+    # Upstream gitignores uv.lock, so a plain `uv sync` re-resolves those nine
+    # repos at HEAD every time. Building here freezes them into the image —
+    # extract the generated lock afterwards and commit it to the fork:
+    #
+    #   singularity exec mosaic.sif cat /opt/mosaic/uv.lock > uv.lock
+    #
+    # Once committed, add it to %files above and swap the line below for
+    # `uv sync --frozen --group jax-cuda` to get byte-identical rebuilds.
+    cd /opt/mosaic
+    uv sync --group jax-cuda --python /usr/bin/python3.12
+
+    # ── runtime mount points ─────────────────────────────────────────────────
+    # /weights   read-only, shared across all users (model checkpoints)
+    # /cache     writable, per-user (MSA cache, OpenDDE derived templates)
+    # /jax_cache writable, shared (compiled XLA kernels)
+    # /work      writable, per-user (designs, logs)
+    #
+    # /jax_cache must exist at this exact path: examples/proteina.py:16 and
+    # examples/promera_design.py:26 hardcode it as an absolute path. Inside a
+    # container that is a feature, not a bug — bind scratch onto it.
+    mkdir -p /weights /cache /jax_cache /work
+    chmod 1777 /cache /jax_cache /work
+
+    # Make the venv usable without activation.
+    ln -sf /opt/mosaic/.venv/bin/python /usr/local/bin/mosaic-python
+
+%environment
+    export PATH=/opt/mosaic/.venv/bin:$PATH
+    export PYTHONUNBUFFERED=1
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+    # HuggingFace-backed models (ESM-C, ESMFold2, ESM2). Bind the shared
+    # cache_models tree here — it already has the hub/ + xet/ layout that
+    # huggingface_hub expects.
+    export HF_HOME=/weights/hf
+
+    # The only two mosaic cache paths that are settable by environment.
+    # ~/.boltz, ~/.alphafold and ~/.protenix are NOT — losses/protenix.py:23
+    # overwrites PROTENIX_DATA_ROOT_DIR at import. Those are handled by
+    # overriding HOME at runtime; see setup-user-home.sh.
+    export MOSAIC_MSA_CACHE=/cache/msa
+    export MOSAIC_OPENDDE_TEMPLATE_CACHE=/cache/opendde
+
+    # Jobs get an exclusive GPU, so let XLA claim it. Override per-job if you
+    # ever share a card (you shouldn't — mosaic is single-device throughout).
+    export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
+
+%runscript
+    exec python "$@"
+
+%test
+    # Build-time checks only. No GPU is visible during `singularity build`,
+    # so this cannot verify CUDA — it confirms the environment resolves.
+    set -eu
+    /opt/mosaic/.venv/bin/python /opt/mosaic/singularity/selftest.py
+    command -v wget >/dev/null || { echo "FAIL: wget missing (boltzgen needs it)"; exit 1; }
+    echo "OK: image self-test passed"
+
+%help
+    mosaic — multi-objective protein design in JAX.
+
+    BUILD (login node, needs internet and ~40 GB free)
+        cd <repo root>
+        singularity build --fakeroot singularity/mosaic.sif singularity/mosaic.def
+
+    RUN
+        singularity exec --nv \
+            -H  /scratch/$USER/mosaic/home \
+            -B  /shared/mosaic-weights:/weights:ro \
+            -B  /scratch/$USER/mosaic/cache:/cache \
+            -B  /scratch/$USER/mosaic/jax_cache:/jax_cache \
+            -B  /scratch/$USER/mosaic/out:/work \
+            singularity/mosaic.sif \
+            python /opt/mosaic/examples/example_notebook.py
+
+    --nv is mandatory. Without it JAX silently falls back to CPU and a design
+    run that should take hours takes days.
+
+    -H is mandatory. mosaic writes model weights to five separate directories
+    under $HOME and only two are redirectable by environment variable. Without
+    the override you will fill your home quota. Run setup-user-home.sh once to
+    create a home that symlinks the shared read-only weights into place.
+
+    RESOURCES
+        1 GPU per job — there is no pmap, sharding or jax.distributed anywhere
+        in the source, so extra GPUs cannot be used. Scale with a job array.
+        H100 (80 GB) is enough unless ESM-C 6B is in the objective, which costs
+        24 GB of fp32 weights on its own; use H200 (141 GB) for that.
