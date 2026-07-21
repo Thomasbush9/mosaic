@@ -9,8 +9,8 @@ Runs in two contexts:
 
   run time    — `singularity exec --nv ... selftest.py` on a compute node.
                 Adds GPU visibility, mounted weights and cache writability.
-                Failures here are reported but do not stop the process, so a
-                partial setup still tells you everything that is wrong at once.
+                Any failure exits non-zero so design.sbatch preflight can
+                abort the array before the remaining tasks burn GPU hours.
 
 Every failure mode this catches otherwise surfaces as an error that does not
 name its own cause: a missing --nv looks like a very slow job, an unbound
@@ -27,16 +27,17 @@ from pathlib import Path
 
 REQUIRED_MODULES = ("jax", "equinox", "optax", "torch", "gemmi", "numpy", "mosaic")
 
-# (env var or path, human name). Paths are the container-side mount points
-# declared in mosaic.def.
+# Weight caches, at the paths mosaic itself looks for. mosaic-exec.sh binds the
+# shared read-only tree directly onto these, so they are ordinary directories —
+# not symlinks, and not redirected by any environment variable.
 WEIGHT_LOCATIONS = (
-    ("/weights/hf", "HuggingFace cache (ESM-C, ESMFold2, ESM2)"),
+    ("~/.cache/huggingface", "HuggingFace cache (ESM-C, ESMFold2, ESM2)"),
     ("~/.boltz", "Boltz-1 / Boltz-2 / BoltzGen checkpoints + CCD"),
     ("~/.alphafold/params", "AlphaFold2 parameters"),
     ("~/.protenix", "Protenix weights + reference data"),
 )
 
-WRITABLE_PATHS = ("/cache", "/jax_cache", "/work")
+WRITABLE_PATHS = ("/jax_cache", "/work", "~/.cache/mosaic")
 
 _ok = "  ok   "
 _bad = " FAIL  "
@@ -157,11 +158,41 @@ def check_gpu(build_time: bool) -> None:
         report(_bad, "GPU visible", "backend is CPU — did you forget --nv?")
 
 
+def _broken_link_in(path: Path) -> Path | None:
+    """First component of `path` that is a symlink which does not resolve.
+
+    Walks root -> leaf so the outermost break is reported, which is the one the
+    user has to fix. Returns None if nothing along the path is a broken link.
+    """
+    chain: list[Path] = []
+    cur = path
+    while True:
+        chain.append(cur)
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    for component in reversed(chain):
+        if component.is_symlink() and not component.exists():
+            return component
+    return None
+
+
 def check_weights(build_time: bool) -> None:
     if build_time:
         return
     for raw, label in WEIGHT_LOCATIONS:
         path = Path(os.path.expanduser(raw))
+        # Defensive: the current design uses bind mounts, not symlinks, so this
+        # should never fire. It catches a hand-rolled setup that linked these to
+        # a host path — which resolves on the login node and dangles in the
+        # container, where it is the only place that matters. Checks every
+        # component, not just the leaf: ~/.alphafold/params is reached *through*
+        # ~/.alphafold, so the break would be a parent.
+        broken = _broken_link_in(path)
+        if broken is not None:
+            failures.append(f"{label} (dangling)")
+            report(_bad, label, f"{broken} -> {os.readlink(broken)} does not resolve here")
+            continue
         if not path.exists():
             warnings.append(label)
             report(_warn, label, f"{raw} not found (fine if unused)")
@@ -171,6 +202,15 @@ def check_weights(build_time: bool) -> None:
         except OSError as exc:
             warnings.append(label)
             report(_warn, label, f"unreadable: {exc}")
+            continue
+        # The failure mode of explicit bind mounts: mosaic-exec.sh creates the
+        # destination before mounting, so a bind that was skipped or pointed at
+        # an empty source leaves a real but empty directory. mosaic would then
+        # silently re-download tens of GB into scratch instead of using the
+        # shared copy.
+        if size == 0:
+            failures.append(f"{label} (empty)")
+            report(_bad, label, f"{raw} exists but is empty — bind did not happen")
             continue
         report(_ok, label, f"{size / 2**30:.1f} GiB at {raw}")
 
@@ -200,7 +240,7 @@ def check_writable(build_time: bool) -> None:
     if build_time:
         return
     for raw in WRITABLE_PATHS:
-        path = Path(raw)
+        path = Path(os.path.expanduser(raw))
         probe = path / ".mosaic-write-probe"
         try:
             probe.touch()
@@ -243,10 +283,10 @@ def main() -> int:
 
     print("-" * 64)
     if failures:
+        # Always non-zero: build %test must fail the image, and design.sbatch
+        # preflight must stop the array. Warnings alone do not fail.
         print(f"{len(failures)} problem(s): {', '.join(failures)}")
-        # At build time any failure is fatal. At runtime, report and continue so
-        # the user sees the whole picture in one pass.
-        return 1 if build_time else 0
+        return 1
     if warnings:
         print(f"no failures, {len(warnings)} warning(s)")
     else:

@@ -82,16 +82,17 @@ From: ubuntu:24.04
     uv sync --group jax-cuda --python /usr/bin/python3.12
 
     # ── runtime mount points ─────────────────────────────────────────────────
-    # /weights   read-only, shared across all users (model checkpoints)
-    # /cache     writable, per-user (MSA cache, OpenDDE derived templates)
-    # /jax_cache writable, shared (compiled XLA kernels)
-    # /work      writable, per-user (designs, logs)
+    # Only two absolute paths are needed. The weight caches are NOT mounted at
+    # invented locations — mosaic-exec.sh binds them directly onto the paths
+    # mosaic already looks for inside a writable HOME (~/.boltz, ~/.alphafold,
+    # ~/.protenix, ~/.cache/huggingface). That removes the need to redirect
+    # anything by environment variable.
     #
     # /jax_cache must exist at this exact path: examples/proteina.py:16 and
     # examples/promera_design.py:26 hardcode it as an absolute path. Inside a
     # container that is a feature, not a bug — bind scratch onto it.
-    mkdir -p /weights /cache /jax_cache /work
-    chmod 1777 /cache /jax_cache /work
+    mkdir -p /jax_cache /work
+    chmod 1777 /jax_cache /work
 
     # Make the venv usable without activation.
     ln -sf /opt/mosaic/.venv/bin/python /usr/local/bin/mosaic-python
@@ -102,17 +103,14 @@ From: ubuntu:24.04
     export LC_ALL=C.UTF-8
     export LANG=C.UTF-8
 
-    # HuggingFace-backed models (ESM-C, ESMFold2, ESM2). Bind the shared
-    # cache_models tree here — it already has the hub/ + xet/ layout that
-    # huggingface_hub expects.
-    export HF_HOME=/weights/hf
-
-    # The only two mosaic cache paths that are settable by environment.
-    # ~/.boltz, ~/.alphafold and ~/.protenix are NOT — losses/protenix.py:23
-    # overwrites PROTENIX_DATA_ROOT_DIR at import. Those are handled by
-    # overriding HOME at runtime; see setup-user-home.sh.
-    export MOSAIC_MSA_CACHE=/cache/msa
-    export MOSAIC_OPENDDE_TEMPLATE_CACHE=/cache/opendde
+    # Deliberately NOT setting HF_HOME / MOSAIC_MSA_CACHE /
+    # MOSAIC_OPENDDE_TEMPLATE_CACHE. mosaic-exec.sh binds the shared caches
+    # straight onto mosaic's own default locations inside a writable HOME, so
+    # the defaults are already correct and there is nothing to redirect.
+    #
+    # This is also the only arrangement that works for Protenix:
+    # losses/protenix.py:23 sets PROTENIX_DATA_ROOT_DIR unconditionally at
+    # import, so anything exported here would be silently overwritten anyway.
 
     # Jobs get an exclusive GPU, so let XLA claim it. Override per-job if you
     # ever share a card (you shouldn't — mosaic is single-device throughout).
@@ -125,7 +123,7 @@ From: ubuntu:24.04
     # Build-time checks only. No GPU is visible during `singularity build`,
     # so this cannot verify CUDA — it confirms the environment resolves.
     set -eu
-    /opt/mosaic/.venv/bin/python /opt/mosaic/singularity/selftest.py
+    /opt/mosaic/.venv/bin/python /opt/mosaic/singularity/selftest.py --build
     command -v wget >/dev/null || { echo "FAIL: wget missing (boltzgen needs it)"; exit 1; }
     echo "OK: image self-test passed"
 
@@ -137,22 +135,22 @@ From: ubuntu:24.04
         singularity build --fakeroot singularity/mosaic.sif singularity/mosaic.def
 
     RUN
-        singularity exec --nv \
-            -H  /scratch/$USER/mosaic/home \
-            -B  /shared/mosaic-weights:/weights:ro \
-            -B  /scratch/$USER/mosaic/cache:/cache \
-            -B  /scratch/$USER/mosaic/jax_cache:/jax_cache \
-            -B  /scratch/$USER/mosaic/out:/work \
-            singularity/mosaic.sif \
-            python /opt/mosaic/examples/example_notebook.py
+        Use the wrapper — it assembles the bind mounts and creates the mount
+        points, which have to exist before Singularity can mount onto them:
+
+            singularity/mosaic-exec.sh python /opt/mosaic/singularity/selftest.py
+
+        Pass --show to print the resolved command without running it. Configure
+        via MOSAIC_SIF, MOSAIC_WEIGHTS and MOSAIC_SCRATCH.
 
     --nv is mandatory. Without it JAX silently falls back to CPU and a design
     run that should take hours takes days.
 
     -H is mandatory. mosaic writes model weights to five separate directories
-    under $HOME and only two are redirectable by environment variable. Without
-    the override you will fill your home quota. Run setup-user-home.sh once to
-    create a home that symlinks the shared read-only weights into place.
+    under $HOME; without the override you will fill your home quota. The
+    wrapper binds the shared read-only caches directly onto those locations
+    inside a scratch HOME, so no environment redirection is needed and no
+    symlinks are involved.
 
     RESOURCES
         1 GPU per job — there is no pmap, sharding or jax.distributed anywhere
