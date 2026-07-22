@@ -75,7 +75,9 @@ From: ubuntu:24.04
 
     # ── dependencies ─────────────────────────────────────────────────────────
     # Needs network: nine dependencies are git-sourced from GitHub, plus PyPI
-    # and download.pytorch.org. Build on a login node, not a compute node.
+    # and download.pytorch.org. On FASRC/Kempner the compute nodes have working
+    # outbound HTTPS, so use singularity/build.sbatch — a login-node build gets
+    # its mksquashfs step killed by the process arbiter.
     #
     # --frozen pins those nine repos to the commits in uv.lock, which this fork
     # tracks even though upstream gitignores it. Without it every build resolves
@@ -85,6 +87,22 @@ From: ubuntu:24.04
     #   uv lock --upgrade && singularity build --fakeroot ...
     cd /opt/mosaic
     uv sync --frozen --group jax-cuda --python /usr/bin/python3.12
+
+    # ── dm-haiku vs JAX 0.11 ─────────────────────────────────────────────────
+    # dm-haiku 0.0.16 (the newest release, no fix upstream) binds
+    # jax.core.DropVar at import time, which JAX removed in 0.11.0, so
+    # `import haiku` raises and the AF2 backend cannot even be imported.
+    # jaxpr_info.py already imports jax.extend.core as jax_core and carries a
+    # TODO to use it; this applies that single line. jax.core.Atom on the line
+    # above still resolves and jax.extend.core has no Atom, so only DropVar
+    # moves. Pinning jax<0.11 instead would drag every other backend back.
+    #
+    # Only the vendored AF2 code imports haiku, so the blast radius is AF2.
+    HAIKU_JI=/opt/mosaic/.venv/lib/python3.12/site-packages/haiku/_src/jaxpr_info.py
+    sed -i 's/^DropVar: TypeAlias = jax\.core\.DropVar$/DropVar: TypeAlias = jax_core.DropVar/' "$HAIKU_JI"
+    # Fail the build rather than ship an image where AF2 silently cannot import.
+    grep -q '^DropVar: TypeAlias = jax_core\.DropVar$' "$HAIKU_JI"
+    /opt/mosaic/.venv/bin/python -c "import haiku; print('haiku import ok', haiku.__version__)"
 
     # ── runtime mount points ─────────────────────────────────────────────────
     # Only two absolute paths are needed. The weight caches are NOT mounted at
