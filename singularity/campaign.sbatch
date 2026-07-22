@@ -9,6 +9,17 @@
 #     TARGET_FASTA  TARGET_MSA  BINDER_LENGTH  MODELS  BATCH
 #     SOFT_STEPS  SHARP_STEPS  OUT_DIR
 #
+# CAUTION with multiple models: SLURM's --export takes a comma-separated list of
+# KEY=VALUE pairs, so
+#     --export=ALL,MODELS=boltz2,af2        # WRONG — silently runs boltz2 only
+# parses as MODELS=boltz2 plus a stray `af2` that is discarded. Nothing errors;
+# the job just quietly runs one backend. Use either
+#     --export=ALL,MODELS=boltz2+af2        # '+' is accepted as a separator
+# or set it in the environment and let --export=ALL carry it:
+#     MODELS=boltz2,af2 sbatch --export=ALL singularity/campaign.sbatch
+# The log line "structure backends: ..." reports what was actually used — check
+# it rather than trusting the submit command.
+#
 # WHY AN ARRAY AND NOT MULTI-GPU: mosaic is single-device throughout. There is
 # no pmap, shard_map, jax.sharding or jax.distributed anywhere in src/ — verified
 # by grep, and stated in singularity/README.md. Extra GPUs in one process are

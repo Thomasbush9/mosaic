@@ -158,7 +158,13 @@ def main() -> int:
             return ProtenixMini()
         raise SystemExit(f"unknown model {name!r}")
 
-    names = [m.strip() for m in args.models.split(",") if m.strip()]
+    # Accept '+' as well as ',' as a separator. SLURM's --export takes a
+    # comma-separated KEY=VALUE list, so `--export=ALL,MODELS=boltz2,af2` is
+    # parsed as MODELS=boltz2 plus a bare `af2` that is silently discarded — the
+    # job then runs one backend while claiming to run two, and the only symptom
+    # is that adding a model does not cost any time. Use MODELS=boltz2+af2 with
+    # --export, or set the variable in the environment and pass --export=ALL.
+    names = [m.strip() for m in args.models.replace("+", ",").split(",") if m.strip()]
     print(f"structure backends: {', '.join(names)}")
 
     # The per-backend structural objective. Each backend contributes the same
