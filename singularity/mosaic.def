@@ -50,6 +50,7 @@ From: ubuntu:24.04
     # 70 MB .git directory and any local .venv stay out of the image.
     pyproject.toml   /opt/mosaic/pyproject.toml
     uv.lock          /opt/mosaic/uv.lock
+    run_design.py    /opt/mosaic/run_design.py
     README.md        /opt/mosaic/README.md
     stability.eqx    /opt/mosaic/stability.eqx
     src              /opt/mosaic/src

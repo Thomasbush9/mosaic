@@ -95,6 +95,24 @@ bind_cache openfold3 .openfold3
 # mosaic.def pre-creates (they cannot be created here — the image is read-only).
 # Done this way, ablang.pretrained("heavy") finds amodel.pt and never attempts
 # the download that would fail on the read-only filesystem.
+# MOSAIC_DEV_SRC=<repo>/src binds the working tree's source over the image's
+# copy, so edits to src/mosaic take effect immediately instead of costing a
+# ~10 min rebuild. This works because mosaic is an editable install: the venv
+# ships _editable_impl_mosaic.pth pointing at /opt/mosaic/src, so whatever is
+# mounted there is what gets imported.
+#
+# Off by default and announced loudly when on, because a run with it set is NOT
+# reproducible from the .sif alone — the image no longer determines the code.
+# Use it while iterating; rebuild before a campaign you intend to keep.
+if [[ -n "${MOSAIC_DEV_SRC:-}" ]]; then
+    if [[ ! -d "$MOSAIC_DEV_SRC/mosaic" ]]; then
+        echo "error: MOSAIC_DEV_SRC=$MOSAIC_DEV_SRC has no mosaic/ subdirectory" >&2
+        exit 65
+    fi
+    binds+=(-B "$MOSAIC_DEV_SRC:/opt/mosaic/src:ro")
+    echo "note: DEV SOURCE from $MOSAIC_DEV_SRC overrides the image's src" >&2
+fi
+
 SITE=/opt/mosaic/.venv/lib/python3.12/site-packages
 bind_pkg_weights() {
     local src="$MOSAIC_WEIGHTS/$1" dest="$2"
