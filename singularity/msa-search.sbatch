@@ -32,7 +32,11 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --time=02:00:00
+# 8h, not 2h: a 40-residue query finished in 22 min, but a 237-residue one was
+# still running at 1h45m against colabfold_envdb. Search time scales sharply with
+# query length, and losing a nearly-complete search to the wall clock costs more
+# than holding the allocation.
+#SBATCH --time=08:00:00
 #SBATCH --output=logs/msa-%j.out
 #SBATCH --error=logs/msa-%j.out
 
