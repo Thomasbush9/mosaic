@@ -67,9 +67,13 @@ def parse_args() -> argparse.Namespace:
                         "the body never executes and the loss has no dependence on "
                         "the sequence — a silently zero gradient.")
     p.add_argument("--out", required=True, help="output directory")
-    p.add_argument("--no-cys", action="store_true", default=True,
-                   help="penalise cysteine in the binder (default on): free "
-                        "cysteines are a liability in a de novo binder")
+    p.add_argument("--no-cys", action=argparse.BooleanOptionalAction, default=True,
+                   help="forbid cysteine in the binder (default on). NoCys is a "
+                        "reparameterization, not a penalty: the optimizer works "
+                        "over 19 columns and NoCys splices a zero-probability C "
+                        "back in, so cysteine is structurally impossible rather "
+                        "than merely discouraged. Free cysteines are a liability "
+                        "in a de novo binder. Use --no-no-cys to allow them.")
     return p.parse_args()
 
 
@@ -200,20 +204,32 @@ def main() -> int:
         print(f"  esmc ({args.esmc}): loaded in {time.time() - t0:.1f}s, "
               f"clipped to [2, 100], weight {args.esmc_weight}")
 
+    # NoCys is a reparameterization, not an additive penalty: it consumes an
+    # [N, 19] sequence and splices a zero-probability cysteine column back in
+    # before calling the wrapped loss. So it wraps the whole objective and the
+    # optimizer's alphabet shrinks to 19 — cysteine becomes impossible rather
+    # than merely expensive. The decode step below has to undo this, which is
+    # what NoCys's own docstring warns about.
+    n_tokens = 20
     if args.no_cys:
-        loss_term = loss_term + 1.0 * NoCys()
+        loss_term = NoCys(loss_term)
+        n_tokens = 19
+        print("  no-cys: optimizing over 19 tokens (cysteine excluded by construction)")
 
     key = jax.random.key(args.seed)
     key, init_key = jax.random.split(key)
     # Start near the uniform point of the simplex with a little noise, so the B
     # trajectories diverge instead of collapsing to the same path.
     x = jax.random.uniform(
-        init_key, (args.batch, args.binder_length, 20), minval=0.0, maxval=1.0
+        init_key, (args.batch, args.binder_length, n_tokens), minval=0.0, maxval=1.0
     )
     x = x / x.sum(-1, keepdims=True)
 
+    # Both stages return (final_iterate, best_iterate). Continue from the final
+    # iterate — best_x is a snapshot, not a state the optimizer can resume from
+    # coherently (its momentum history belongs to a different point).
     t0 = time.time()
-    x = batched_simplex_APGM(
+    x, _ = batched_simplex_APGM(
         loss_function=loss_term, x=x, n_steps=args.soft_steps,
         stepsize=0.1, momentum=0.9, key=key,
     )
@@ -224,11 +240,19 @@ def main() -> int:
     # protein.
     t0 = time.time()
     key, sharp_key = jax.random.split(key)
-    x = batched_simplex_APGM(
+    x, best_x = batched_simplex_APGM(
         loss_function=loss_term, x=x, n_steps=args.sharp_steps,
         stepsize=0.025, momentum=0.5, key=sharp_key, scale=2.0,
     )
     print(f"sharp stage ({args.sharp_steps} steps): {time.time() - t0:.1f}s")
+
+    # Report best_x, not the final iterate: APGM with momentum does not descend
+    # monotonically, so the last step is not reliably the best one. Note the
+    # optimizer's own caveat (optimizers.py:312) that best_x is tracked against a
+    # loss evaluated at the extrapolated point v rather than at x, so it is a
+    # close approximation of the best iterate rather than an exact one — the
+    # re-evaluation below reports each design's actual loss regardless.
+    x = best_x
 
     from mosaic.common import TOKENS
     from mosaic.optimizers import batched_eval
@@ -237,9 +261,21 @@ def main() -> int:
     values, _aux, _g = batched_eval(loss_term, x, keys)
     values = np.asarray(values)
 
+    # Undo the NoCys reparameterization before decoding: the optimizer's 19
+    # columns are not TOKENS, they are TOKENS with C removed. Reading them off
+    # directly would silently shift every residue at or after index 4 (C).
+    #
+    # NoCys.sequence is 2D-only — it slices seq[:, :cys_idx], hardcoding axis 1 —
+    # so it must be applied per trajectory, not to the [B, N, 19] batch. Handing
+    # it the batched array slices the residue axis instead of the token axis and
+    # fails, or worse, would quietly mangle the shape.
+    def decode(xb):
+        full = NoCys.sequence(xb) if args.no_cys else xb
+        return "".join(TOKENS[i] for i in np.asarray(full).argmax(-1))
+
     results = []
     for b in range(args.batch):
-        seq = "".join(TOKENS[i] for i in np.asarray(x[b]).argmax(-1))
+        seq = decode(x[b])
         results.append({"trajectory": b, "seed": args.seed,
                         "loss": float(values[b]), "sequence": seq})
         print(f"[{b}] loss={values[b]:.4f}  {seq}")
