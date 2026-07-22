@@ -84,6 +84,16 @@ bind_cache alphafold .alphafold
 bind_cache protenix  .protenix
 bind_cache hf        .cache/huggingface
 
+# jopenfold3 reads ~/.openfold3/jax/of3.{skeleton.pkl,eqx} — a plain default
+# argument to OpenFold3.load(), with no env var to redirect it. jopenfold3
+# converts the upstream torch checkpoint to equinox on first call; the
+# conversion is done once by fetch-weights.sbatch and bound read-only here.
+bind_cache openfold3 .openfold3
+
+# jproteina_complexa.hub hardcodes ~/.cache/jproteina_complexa as a default
+# argument too (hub.py:8), so it needs the same treatment.
+bind_cache jproteina .cache/jproteina_complexa
+
 # /jax_cache is bound, not defaulted: examples/proteina.py:16 and
 # examples/promera_design.py:26 hardcode that absolute path. Shared and
 # writable, so array tasks reuse each other's compiled kernels instead of each
@@ -97,6 +107,18 @@ binds+=(-B "$MOSAIC_SCRATCH/out:/work")
 # unset precisely so the bind is what decides; pin it to the container-side path
 # here so the result does not depend on the caller's shell.
 export SINGULARITYENV_HF_HOME="$CHOME/.cache/huggingface"
+
+# The FASRC hosts export RHEL CA paths (SSL_CERT_FILE / CURL_CA_BUNDLE ->
+# /etc/ssl/certs/ca-bundle.crt) which do not exist in this Ubuntu container,
+# where the bundle is ca-certificates.crt. Singularity inherits them, so every
+# HTTPS request through `requests` dies with
+#   OSError: Could not find a suitable TLS CA certificate bundle
+# That breaks weight downloads and, at run time, the ColabFold MSA fetches that
+# Boltz/OF3/Protenix make during featurization. Point them at the container's
+# own bundle.
+export SINGULARITYENV_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+export SINGULARITYENV_SSL_CERT_DIR=/etc/ssl/certs
+export SINGULARITYENV_CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 cmd=(singularity exec $MOSAIC_GPU_FLAG -H "$CHOME" "${binds[@]}" "$MOSAIC_SIF" "$@")
 

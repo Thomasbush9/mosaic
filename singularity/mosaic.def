@@ -25,6 +25,11 @@ From: ubuntu:24.04
 #     shells out to the binary to fetch checkpoints. Without it you get a
 #     zero-byte file and an opaque unpickling error much later.
 #
+#   * libxrender1 / libxext6 / libsm6 are needed by rdkit.Chem.Draw, which
+#     pdbeccdutils imports at module scope, which jopenfold3 imports during
+#     featurization. Nothing here draws anything — but without them OF3 fails at
+#     import with `libXrender.so.1: cannot open shared object file`.
+#
 #   * build-essential is needed at build time even though nothing here is
 #     compiled on purpose: opendde pulls in scikit-learn-extra 0.3.0, which
 #     publishes no cp312 wheel, so uv compiles it from the sdist. It is left
@@ -65,7 +70,10 @@ From: ubuntu:24.04
         python3.12 \
         python3.12-venv \
         python3.12-dev \
-        libgomp1
+        libgomp1 \
+        libxrender1 \
+        libxext6 \
+        libsm6
     rm -rf /var/lib/apt/lists/*
 
     # ── uv ───────────────────────────────────────────────────────────────────
@@ -138,6 +146,18 @@ From: ubuntu:24.04
     # Jobs get an exclusive GPU, so let XLA claim it. Override per-job if you
     # ever share a card (you shouldn't — mosaic is single-device throughout).
     export XLA_PYTHON_CLIENT_MEM_FRACTION=0.95
+
+    # The FASRC hosts export RHEL CA paths (SSL_CERT_FILE / CURL_CA_BUNDLE ->
+    # /etc/ssl/certs/ca-bundle.crt) that do not exist here, and Singularity
+    # inherits them — every `requests` HTTPS call then dies with
+    # "Could not find a suitable TLS CA certificate bundle". That breaks weight
+    # downloads and the ColabFold MSA fetches Boltz/OF3/Protenix make during
+    # featurization. mosaic-exec.sh also sets these via SINGULARITYENV_ (which
+    # wins over inherited vars); this is the fallback for a bare
+    # `singularity exec`.
+    export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+    export SSL_CERT_DIR=/etc/ssl/certs
+    export CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 
 %runscript
     exec python "$@"

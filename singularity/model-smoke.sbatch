@@ -82,13 +82,40 @@ import mosaic.losses.structure_prediction as sp
 TARGET = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQ"
 BINDER_LEN = 16
 
+# Proteina and BoltzGen are not StructurePredictionModel implementations — they
+# are generative and have no binder_features/build_loss — so they get a load
+# check rather than the forward+gradient path below.
+if model_name in ("proteina", "boltzgen"):
+    t0 = time.time()
+    if model_name == "proteina":
+        from jproteina_complexa.hub import load_denoiser, load_decoder
+        den, dec = load_denoiser(), load_decoder()
+        print(f"loaded in {time.time()-t0:.1f}s -> {type(den).__name__}, {type(dec).__name__}")
+    else:
+        from mosaic.models.boltzgen import load_boltzgen
+        bg = load_boltzgen()
+        print(f"loaded in {time.time()-t0:.1f}s -> {type(bg).__name__}")
+    print(f"{model_name.upper()} LOAD OK")
+    raise SystemExit(0)
+
 t0 = time.time()
 if model_name == "af2":
     from mosaic.models.af2 import AlphaFold2
     model = AlphaFold2(multimer=True)
+elif model_name == "boltz1":
+    from mosaic.models.boltz1 import Boltz1
+    model = Boltz1()
 elif model_name == "boltz2":
     from mosaic.models.boltz2 import Boltz2
     model = Boltz2()
+elif model_name == "protenix":
+    # Mini is the smallest checkpoint and the cheapest thing that still
+    # exercises the whole protenij load + featurize + forward path.
+    from mosaic.models.protenix import ProtenixMini
+    model = ProtenixMini()
+elif model_name == "of3":
+    from mosaic.models.of3 import OF3
+    model = OF3()
 else:
     raise SystemExit(f"unknown MODEL={model_name}")
 print(f"model loaded in {time.time()-t0:.1f}s")
@@ -115,27 +142,42 @@ loss_term = model.build_loss(
 soft = jnp.full((BINDER_LEN, len(TOKENS)), 1.0 / len(TOKENS))
 key = jax.random.key(0)
 
+# Use mosaic own evaluator rather than calling the term eagerly. It is what
+# every optimizer calls, and the difference is load-bearing: it passes the loss
+# as an ARGUMENT to eqx.filter_jit (optimizers.py:60-63), so numpy leaves inside
+# the features become JAX arrays. Called eagerly, Protenix dies on
+# features["restype"].at[...] because featurize() returns numpy and .at is
+# JAX-only. It also applies the simplex tangent-space projection
+# (g - g.mean(-1)) that simplex_APGM depends on, so the gradient checked here is
+# the gradient a design run actually steps with.
+from mosaic.optimizers import _eval_loss_and_grad
+
 t0 = time.time()
-value, aux = loss_term(soft, key=key)
+(value, aux), grad = _eval_loss_and_grad(loss_term, soft, key)
 value = float(value)
-print(f"forward (incl. JIT trace): {time.time()-t0:.1f}s")
+grad = np.asarray(grad)
+print(f"loss+grad (incl. JIT trace): {time.time()-t0:.1f}s")
 print("loss:", value)
-# aux values are not all scalars — some terms report per-residue arrays.
+# aux is not a uniform shape across backends: a dict for AF2/Boltz, a list for
+# Protenix and OF3 (which return one entry per sample). Nor are the values all
+# scalars — some terms report per-residue arrays. Map over it as a pytree rather
+# than assuming .items().
 def _fmt(v):
     a = np.asarray(v)
     return float(a) if a.ndim == 0 else f"array{a.shape}"
-print("aux:", {k: _fmt(v) for k, v in aux.items()})
+print("aux:", jax.tree_util.tree_map(_fmt, aux))
 assert np.isfinite(value), "forward produced a non-finite loss"
 
-# The point of mosaic: the loss must be differentiable back to the sequence.
-t0 = time.time()
-grad = jax.grad(lambda s: loss_term(s, key=key)[0])(soft)
-grad = np.asarray(grad)
-print(f"backward: {time.time()-t0:.1f}s")
 print("grad shape:", grad.shape, "finite:", bool(np.isfinite(grad).all()),
       "absmax:", float(np.abs(grad).max()))
 assert np.isfinite(grad).all(), "gradient contains NaN/Inf"
 assert np.abs(grad).max() > 0, "gradient is identically zero — nothing reaches the sequence"
+# _eval_loss_and_grad projects onto the simplex tangent space, so each row must
+# sum to ~0. If this drifts, mirror descent in simplex_APGM will walk off the
+# simplex.
+row_sums = np.abs(grad.sum(axis=-1)).max()
+print("max |row sum| after tangent projection:", float(row_sums))
+assert row_sums < 1e-4, f"gradient rows do not sum to zero ({row_sums})"
 
 print(f"{model_name.upper()} FORWARD+GRAD OK")
 '
