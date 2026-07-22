@@ -47,7 +47,7 @@ fi
 echo "── $MODEL forward + gradient ──"
 nvidia-smi --query-gpu=name --format=csv,noheader
 
-MODEL="$MODEL" SINGULARITYENV_HAIKU_SHIM="${HAIKU_SHIM:-0}" "$HERE/mosaic-exec.sh" python -c '
+MODEL="$MODEL" SINGULARITYENV_MSA_PATH="${MSA_PATH:-}" SINGULARITYENV_HAIKU_SHIM="${HAIKU_SHIM:-0}" "$HERE/mosaic-exec.sh" python -c '
 import os, time
 import numpy as np, jax, jax.numpy as jnp
 
@@ -161,9 +161,19 @@ else:
     raise SystemExit(f"unknown MODEL={model_name}")
 print(f"model loaded in {time.time()-t0:.1f}s")
 
-features, _ = model.binder_features(
-    BINDER_LEN, [TargetChain(sequence=TARGET, use_msa=False)]
+# MSA_PATH=<a3m> switches the target chain from single-sequence to a locally
+# computed MSA (singularity/msa-search.sbatch). Without it the test stays
+# self-contained and makes no network call. Note only the TARGET gets an MSA —
+# binder_features always builds the binder with use_msa=False.
+msa_path = os.environ.get("MSA_PATH") or None
+target_chain = (
+    TargetChain(sequence=TARGET, use_msa=True, msa_path=msa_path)
+    if msa_path
+    else TargetChain(sequence=TARGET, use_msa=False)
 )
+print("target MSA:", msa_path or "(none — single sequence)")
+
+features, _ = model.binder_features(BINDER_LEN, [target_chain])
 print("features built")
 
 # recycling_steps must be >= 1. The trunk runs inside

@@ -50,6 +50,14 @@ def chain_yaml(chain_name: str, chain: TargetChain) -> str:
     if not chain.use_msa:
         raw += """
         msa: empty"""
+    elif chain.msa_path is not None:
+        # A local .a3m: boltz reads it directly and never contacts the MSA
+        # server. a3m_for_chain fixes the header, which boltz keys chain_to_msa
+        # by — a mismatch silently drops the MSA and runs single-sequence.
+        from ..msa import a3m_for_chain
+
+        raw += f"""
+        msa: {a3m_for_chain(chain.msa_path, chain_name)}"""
 
     return raw
 

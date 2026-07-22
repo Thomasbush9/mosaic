@@ -26,6 +26,11 @@ class TargetChain:
     polymer_type: str = PolymerType.PROTEIN
     use_msa: bool = True
     template_chain: gemmi.Chain | None = None
+    # Path to a precomputed ColabFold .a3m. When set (and use_msa is True) the
+    # backend reads this instead of querying https://api.colabfold.com, which is
+    # otherwise re-queried on every featurization for Boltz and OpenFold3. See
+    # mosaic.msa and singularity/msa-search.sbatch. Ignored when use_msa=False.
+    msa_path: str | None = None
 
 
 class StructurePrediction(eqx.Module):
