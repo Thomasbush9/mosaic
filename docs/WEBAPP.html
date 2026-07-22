@@ -1,0 +1,178 @@
+<!doctype html><html><head><meta charset='utf-8'><title>mosaic — Webapp</title>
+<style>
+.mosaic-doc { max-width: 62rem; line-height: 1.6; font-size: 0.95rem; }
+.mosaic-doc h1 { font-size: 1.7rem; margin: 0 0 .3em; }
+.mosaic-doc h2 { font-size: 1.3rem; margin: 1.6em 0 .4em;
+                 border-bottom: 1px solid rgba(128,128,128,.25);
+                 padding-bottom: .25em; }
+.mosaic-doc h3 { font-size: 1.05rem; margin: 1.2em 0 .3em; }
+.mosaic-doc code { background: rgba(128,128,128,.14); padding: .12em .35em;
+                   border-radius: 4px; font-size: .88em; }
+.mosaic-doc pre { background: rgba(128,128,128,.12); padding: .8em 1em;
+                  border-radius: 6px; overflow-x: auto; }
+.mosaic-doc pre code { background: none; padding: 0; }
+.mosaic-doc table { border-collapse: collapse; margin: 1em 0; width: 100%;
+                    display: block; overflow-x: auto; }
+.mosaic-doc th, .mosaic-doc td { border: 1px solid rgba(128,128,128,.3);
+                                 padding: .45em .7em; text-align: left; }
+.mosaic-doc th { background: rgba(128,128,128,.12); }
+.mosaic-doc blockquote { border-left: 3px solid rgba(128,128,128,.45);
+                         margin: 1em 0; padding: .2em 0 .2em 1em; opacity: .9; }
+.mosaic-doc img { max-width: 100%; }
+</style>
+</head><body><div class='mosaic-doc'><h1 id="the-design-webapp">The design webapp</h1>
+<p>A browser UI for configuring, launching, monitoring and exploring binder design
+campaigns. Modelled on ProtForge's webapp — same shape, same SSH-forwarding
+access pattern.</p>
+<p><strong>Nothing heavy runs in the app.</strong> It reads files and queues SLURM jobs; every
+model evaluation happens in a batch job on a GPU node. That is what makes it
+safe to run on a login node, where FASRC's arbiter kills CPU-heavy processes.</p>
+<hr />
+<h2 id="access">Access</h2>
+<p>From your laptop:</p>
+<pre><code class="language-bash">bash webapp/connect.sh
+</code></pre>
+<p>It forwards a port, creates the virtual environment on first use, starts the
+app, and tells you to open <a href="http://localhost:8502">http://localhost:8502</a>. Ctrl-C disconnects; the app
+keeps running on the cluster.</p>
+<p>Manual equivalent, if you prefer:</p>
+<pre><code class="language-bash"># on the login node
+module load python/3.13.12-fasrc01
+uv venv webapp/.venv --python 3.13
+uv pip install --python webapp/.venv -r webapp/requirements.txt
+webapp/.venv/bin/streamlit run webapp/app.py --server.port 8502 --server.address 127.0.0.1
+
+# on your laptop
+ssh -L 8502:localhost:8502 &lt;user&gt;@holylogin06.rc.fas.harvard.edu
+</code></pre>
+<hr />
+<h2 id="tab-1-launch">Tab 1 — Launch</h2>
+<p>Eight sections, exposing every parameter the pipeline accepts.</p>
+<ol>
+<li><strong>Target</strong> — pick from <code>targets/</code>, with residue count, MSA depth and whether
+   a structure exists. Warns when no MSA is present.</li>
+<li><strong>Binder</strong> — length, cysteine policy, optional seeding from a FASTA
+   (e.g. BoltzGen proposals) with a seed-noise control.</li>
+<li><strong>Structure models</strong> — enable any of Boltz-2, Boltz-1, AF2, OpenFold3,
+   Protenix, each with its own weight <strong>and its own parameters</strong>
+   (<code>recycling_steps</code>, <code>sampling_steps</code>, <code>num_samples</code>, <code>use_dropout</code>, Protenix
+   variant). Selecting AF2 tells you it will run single-sequence, because its
+   wrapper rejects MSAs.</li>
+<li><strong>Loss terms</strong> — all 17, grouped Contact / Shape / Interface / Confidence,
+   each with weight and its own parameters (contact distances, sequence
+   separation, paratope and epitope indices, target radii…).</li>
+<li><strong>Sequence models</strong> — ESM-C with checkpoint and clip bounds; AbLang and
+   AbLang2 marked antibody-only.</li>
+<li><strong>Optimizer</strong> — soft and sharp stages independently: <code>n_steps</code>, <code>stepsize</code>,
+   <code>momentum</code>, <code>scale</code>, <code>logspace</code>, <code>max_gradient_norm</code>.</li>
+<li><strong>Cluster</strong> — array size, designs per GPU, concurrency cap, partition, time,
+   memory, CPUs.</li>
+<li><strong>Review</strong> — live cost estimate, validation errors, the resolved config, and
+   submit.</li>
+</ol>
+<h3 id="two-things-the-ui-tells-you-that-are-easy-to-miss">Two things the UI tells you that are easy to miss</h3>
+<p><strong>Confidence losses are expensive.</strong> pLDDT, PAE, ipTM and ipSAE read the
+structure and confidence modules. Under JIT, JAX <em>prunes</em> those modules when
+nothing reads them — which is why a contact-only objective is fast. Enabling any
+confidence term defeats that pruning; the estimate reflects roughly a 3×
+slowdown.</p>
+<p><strong><code>recycling_steps</code> must be ≥ 1.</strong> Validation refuses 0. The trunk runs inside
+<code>jax.lax.scan(length=recycling_steps)</code>, so at 0 the body never executes and the
+loss stops depending on the sequence — a believable loss with an exactly zero
+gradient.</p>
+<hr />
+<h2 id="tab-2-monitor">Tab 2 — Monitor</h2>
+<p>Queue table, progress across the array, log viewer, cancel — and the part that
+matters most, <strong>verification</strong>.</p>
+<p>Every failure mode this pipeline has produced was <em>silent</em>: the job completes,
+writes plausible output, and only the log reveals it ran one model instead of
+two, or single-sequence instead of MSA-backed. So the tab greps the log for what
+the job <strong>says</strong> it did and shows it as pass/fail against what you requested:</p>
+<ul>
+<li><code>structure backends:</code> — must match the models you selected</li>
+<li><code>target MSA:</code> — must be a path, not <code>(none - single sequence)</code></li>
+<li><code>n_msa</code> — must be in the thousands, not <code>1</code></li>
+<li><code>loss terms:</code> and <code>seeded from</code> when relevant</li>
+</ul>
+<p>The submit command is not evidence. The log is.</p>
+<hr />
+<h2 id="tab-3-results">Tab 3 — Results</h2>
+<p>Ranked designs with filtering by top-N or loss threshold, FASTA download, and
+statistics: loss distribution, spread across seeds, composition versus natural
+amino-acid frequencies, and mean pairwise identity.</p>
+<p><strong>Checks come before results, deliberately.</strong> The tab leads with problems rather
+than a ranked list:</p>
+<ul>
+<li>degenerate composition (any residue above 25%) — the optimizer gamed the
+  objective</li>
+<li>unexpected cysteines — a decode bug, not a design choice</li>
+<li>mean pairwise identity above 80% — the run collapsed to one answer</li>
+<li>mixed model settings in one directory — losses are not comparable</li>
+</ul>
+<p>It also shows the config each campaign ran with, so a result is traceable to its
+settings.</p>
+<h3 id="what-the-loss-means">What the loss means</h3>
+<p>A weighted heuristic over contact geometry, compactness and sequence
+plausibility. <strong>Not</strong> an affinity, a Kd, or a probability of binding. Comparable
+only within one model setting — each extra backend adds a critic, so a two-model
+run reads higher at equal design quality.</p>
+<hr />
+<h2 id="how-configs-work">How configs work</h2>
+<p>The app writes a JSON config to <code>mosaic_setup/configs/</code> and passes SLURM only
+its <strong>path</strong>. That is deliberate: <code>--export</code> is a comma-separated <code>KEY=VALUE</code>
+list, so any value containing a comma is silently truncated. A model list passed
+that way once turned an eight-GPU <code>boltz2</code> vs <code>boltz2+af2</code> comparison into
+<code>boltz2</code> vs <code>boltz2</code>, with no error and no symptom except a suspicious timing.</p>
+<p>A path contains no commas, and the config carries everything else. It is also
+copied next to the results as <code>config_seed&lt;N&gt;.json</code>, so every campaign records
+exactly what produced it.</p>
+<p>Configs are plain JSON — editable by hand, loadable through the sidebar,
+runnable without the app:</p>
+<pre><code class="language-bash">sbatch --array=0-15 \
+  --export=ALL,DESIGN_CONFIG=/path/to/config.json,OUT_DIR=/path/to/out \
+  singularity/campaign.sbatch
+</code></pre>
+<hr />
+<h2 id="architecture">Architecture</h2>
+<p>Following ProtForge: pure logic separate from UI, so it can be tested and reused.</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>app.py</code></td>
+<td>bootstrap, sidebar, tab dispatch</td>
+</tr>
+<tr>
+<td><code>store.py</code></td>
+<td>pure — targets, MSAs, campaigns, designs, statistics</td>
+</tr>
+<tr>
+<td><code>cluster.py</code></td>
+<td>pure — sbatch / squeue / sacct / scancel, log verification</td>
+</tr>
+<tr>
+<td><code>launch_tab.py</code></td>
+<td>Launch UI, generated from the catalogs</td>
+</tr>
+<tr>
+<td><code>monitor_tab.py</code></td>
+<td>Monitor UI</td>
+</tr>
+<tr>
+<td><code>results_tab.py</code></td>
+<td>Results UI</td>
+</tr>
+<tr>
+<td><code>../design_config.py</code></td>
+<td>the catalogs and config builders (shared with <code>run_design.py</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><code>design_config.py</code> is importable <strong>without mosaic</strong>, so the app can build its UI
+host-side while <code>run_design.py</code> uses the same catalogs inside the container.
+Adding a loss term there makes it appear in the UI with no change to the app.</p></div></body></html>

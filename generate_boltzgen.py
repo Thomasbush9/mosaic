@@ -65,6 +65,22 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--target-fasta", default=None)
     ap.add_argument("--target-name", default=None)
+    ap.add_argument("--hotspots", default="",
+                   help="1-based target residues to design against, e.g. "
+                        "'95-110,143'. BoltzGen has no attractive hotspot term "
+                        "(its constraints support only total_len and bond), so "
+                        "this works by CROPPING what the model sees: the target "
+                        "is restricted to a pocket around these residues via "
+                        "the YAML's include/res_index. The binder therefore has "
+                        "nowhere else to bind.")
+    ap.add_argument("--hotspot-shell", type=float, default=6.0,
+                   help="include target residues within this many angstrom of a "
+                        "hotspot, so the model sees a coherent surface patch "
+                        "rather than isolated residues. Calibrate: on the "
+                        "237-residue DIO3 ECD a 6 A shell keeps 21%% of the "
+                        "target, 8 A keeps 38%% and 12 A keeps 69%% — a shell "
+                        "that keeps most of the protein does not constrain "
+                        "anything.")
     ap.add_argument("--contact-cutoff", type=float, default=8.0,
                    help="heavy-atom distance defining an interface contact when "
                         "deriving the epitope from the generated poses")
@@ -83,6 +99,18 @@ def main() -> int:
 
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     target_cif = Path(a.target_cif).resolve()
+
+    # Hotspots -> a pocket, expressed as the YAML's include/res_index.
+    hot1 = P.parse_positions(a.hotspots)
+    include_block = ""
+    pocket1: list[int] = []
+    if hot1:
+        pocket1 = P.pocket_residues(target_cif, hot1, a.hotspot_shell,
+                                    chain_id=a.target_chain)
+        # res_index is 1-based and uses '..' for ranges (schema.py:646-664).
+        include_block = "\n                res_index: " + P.as_res_index(pocket1)
+        print(f"hotspots: {len(hot1)} residues -> pocket of {len(pocket1)} "
+              f"within {a.hotspot_shell} A")
     ss = helix_bundle_ss(a.binder_length)
     print(f"binder {a.binder_length} aa, secondary structure:\n  {ss}")
 
@@ -104,13 +132,14 @@ def main() -> int:
 
           include:
             - chain:
-                id: {chain}
+                id: {chain}{include}
 
     structure_groups:
       - group:
           id: {chain}
           visibility: 2
-    """.format(n=a.binder_length, ss=ss, chain=a.target_chain)
+    """.format(n=a.binder_length, ss=ss, chain=a.target_chain,
+               include=include_block)
 
     features, writer = load_features_and_structure_writer(
         yaml_string=yaml_binder, files={"TARG.CIF": str(target_cif)}
@@ -168,8 +197,11 @@ def main() -> int:
                 "step_scale": a.step_scale, "noise_scale": a.noise_scale,
                 "recycling_steps": a.recycling_steps, "seed": a.seed,
                 "target_chain": a.target_chain,
-                "contact_cutoff": a.contact_cutoff},
-        notes=notes,
+                "contact_cutoff": a.contact_cutoff,
+                "hotspots": hot1, "pocket": pocket1,
+                "hotspot_shell": a.hotspot_shell},
+        notes=notes + ([f"target cropped to a {a.hotspot_shell} A pocket around "
+                        f"{len(hot1)} hotspots"] if hot1 else []),
     )
     P.write(out, ps)
 

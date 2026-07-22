@@ -483,6 +483,117 @@ Typically $\ell$ is formed by a single neural network (or an ensemble of the sam
 
 This kind of modular implementation of loss terms is also useful with modern RL-based alignment of generative models approaches: these forms of alignment can often be seen as _amortized optimization_. Typically, they train a generative model to minimize some combination of KL divergence minus a loss function, which can be a combination of in-silico predictors. We demonstrate exactly this — finetuning and RL-aligning a generative model (BoltzGen) against a `mosaic` loss functional — in [Teaching generative models to hallucinate](https://blog.escalante.bio/teaching-generative-models-to-hallucinate/). Another use case is to provide guidance to discrete diffusion or flow models. 
 
-[^1]: This requires us to treat neural networks as _simple parametric functions_ that can be combined programmatically; **not** as complicated software packages that require large libraries (e.g. PyTorch lightning), bash scripts, or containers as is common practice in BioML. 
+[^1]: This requires us to treat neural networks as _simple parametric functions_ that can be combined programmatically; **not** as complicated software packages that require large libraries (e.g. PyTorch lightning), bash scripts, or containers as is common practice in BioML.
 
+---
 
+## Running on the Kempner cluster (FASRC)
+
+This fork is set up to run on Harvard's Kempner cluster under Singularity. If
+you are here to design binders rather than to develop mosaic, start with
+**[docs/MANUAL.md](docs/MANUAL.md)** — it assumes no computational background —
+and use the webapp below.
+
+### The webapp
+
+A browser UI for the whole pipeline: generate candidates, launch campaigns,
+monitor them, and explore results. From your laptop:
+
+```bash
+bash webapp/connect.sh
+```
+
+It forwards a port, creates the virtual environment on first use, starts the
+app, and points you at <http://localhost:8502>. Manually, if you prefer:
+
+```bash
+# on a login node
+module load python/3.13.12-fasrc01
+uv venv webapp/.venv --python 3.13
+uv pip install --python webapp/.venv -r webapp/requirements.txt
+webapp/.venv/bin/streamlit run webapp/app.py \
+    --server.port 8502 --server.address 127.0.0.1
+
+# on your laptop
+ssh -L 8502:localhost:8502 <user>@holylogin06.rc.fas.harvard.edu
+```
+
+**Nothing heavy runs in the app.** It reads files and queues SLURM jobs; every
+model evaluation happens in a batch job on a GPU node. That is what keeps it
+safe on a login node, where FASRC's arbiter kills CPU-heavy processes.
+
+Five tabs:
+
+| Tab | What it does |
+|---|---|
+| **Launch** | Configure a campaign — target, binder, binding site, models, every loss term, ProteinMPNN, sequence models, both optimizer stages, cluster request |
+| **Generate** | Predict the target structure; run BoltzGen or Proteina; browse proposal sets in 3D and send them to Launch |
+| **Monitor** | Queue, progress, logs, cancel — and verification of what a job actually did |
+| **Results** | Rank and filter designs, statistics, composition, diversity |
+| **Docs** | This documentation, in the browser |
+
+Projects (sessions) each have their own working directory, so switching projects
+switches targets, MSAs, designs and configs together.
+
+### The pipeline
+
+```
+target sequence
+      |
+      +-- MSA search (once per target, 20 min - 2 h)
+      +-- structure prediction (needed for generative models)
+      |
+   Generate  ->  proposal set  ->  Launch  ->  campaign  ->  Results
+                 sequences +                   N GPUs x
+                 poses +                       B trajectories
+                 epitope
+```
+
+A **proposal set** is the handoff: `manifest.json`, `proposals.fasta`, and one
+CIF per design, carrying the sequences *and the epitope those poses use*. That
+last part matters — transferring only sequences leaves the refinement stage to
+re-derive a binding pose from scratch.
+
+### From the command line
+
+Everything the app does is a script, and configs are plain JSON:
+
+```bash
+mkdir -p logs
+
+# once per target
+sbatch --export=ALL,TARGET_FASTA=<abs>,TARGET_NAME=<name> singularity/msa-search.sbatch
+
+# generate candidates (BoltzGen shown; see singularity/proteina.sbatch)
+sbatch --export=ALL,TARGET_CIF=<abs>,OUT_DIR=<abs>,HOTSPOTS=95-110 singularity/boltzgen.sbatch
+
+# refine them
+sbatch --array=0-15 \
+  --export=ALL,DESIGN_CONFIG=<abs>.json,OUT_DIR=<abs> singularity/campaign.sbatch
+```
+
+Rebuild the image with `sbatch singularity/build.sbatch` (a login-node build is
+killed by the arbiter at the `mksquashfs` step).
+
+### Cluster specifics worth knowing
+
+- **Account:** `kempner_bsabatini_lab`. The plain `bsabatini_lab` association has
+  `MaxSubmit=0` and rejects everything at submit time.
+- **Partitions:** `kempner_h100` / `kempner_h200` require a GPU request; CPU-only
+  work (builds, weight fetches) goes to `kempner_interactive`.
+- **One GPU per job.** mosaic is single-device throughout — no `pmap`,
+  `shard_map`, `jax.sharding` or `jax.distributed` anywhere in `src/`. Scale with
+  a job array (across GPUs) and `batch` (within a GPU).
+- **`--export` splits on commas.** `MODELS=boltz2,af2` is silently truncated to
+  `boltz2`. Use `+`, or pass a config file path.
+
+### Further reading
+
+| Document | For |
+|---|---|
+| [docs/MANUAL.md](docs/MANUAL.md) | Running campaigns, written for bench scientists |
+| [docs/MODELS.md](docs/MODELS.md) | Each model, and every parameter |
+| [docs/WEBAPP.md](docs/WEBAPP.md) | The app, tab by tab |
+
+HTML versions live beside them (`docs/*.html`) and render inside the app's Docs
+tab.

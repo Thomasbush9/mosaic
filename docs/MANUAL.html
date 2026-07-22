@@ -1,0 +1,369 @@
+<!doctype html><html><head><meta charset='utf-8'><title>mosaic — Manual</title>
+<style>
+.mosaic-doc { max-width: 62rem; line-height: 1.6; font-size: 0.95rem; }
+.mosaic-doc h1 { font-size: 1.7rem; margin: 0 0 .3em; }
+.mosaic-doc h2 { font-size: 1.3rem; margin: 1.6em 0 .4em;
+                 border-bottom: 1px solid rgba(128,128,128,.25);
+                 padding-bottom: .25em; }
+.mosaic-doc h3 { font-size: 1.05rem; margin: 1.2em 0 .3em; }
+.mosaic-doc code { background: rgba(128,128,128,.14); padding: .12em .35em;
+                   border-radius: 4px; font-size: .88em; }
+.mosaic-doc pre { background: rgba(128,128,128,.12); padding: .8em 1em;
+                  border-radius: 6px; overflow-x: auto; }
+.mosaic-doc pre code { background: none; padding: 0; }
+.mosaic-doc table { border-collapse: collapse; margin: 1em 0; width: 100%;
+                    display: block; overflow-x: auto; }
+.mosaic-doc th, .mosaic-doc td { border: 1px solid rgba(128,128,128,.3);
+                                 padding: .45em .7em; text-align: left; }
+.mosaic-doc th { background: rgba(128,128,128,.12); }
+.mosaic-doc blockquote { border-left: 3px solid rgba(128,128,128,.45);
+                         margin: 1em 0; padding: .2em 0 .2em 1em; opacity: .9; }
+.mosaic-doc img { max-width: 100%; }
+</style>
+</head><body><div class='mosaic-doc'><h1 id="designing-binders-with-mosaic-a-practical-manual">Designing binders with mosaic — a practical manual</h1>
+<p><strong>Who this is for:</strong> you know proteins. You do not need to know JAX, SLURM, or
+containers. Everything here is copy-paste plus editing a few numbers.</p>
+<p><strong>What this does:</strong> you give it a target protein sequence. It designs short
+proteins ("binders") predicted to stick to that target, by asking several
+structure-prediction models at once and gradually rewriting a candidate sequence
+until they all agree it binds.</p>
+<p><strong>What this does <em>not</em> do:</strong> it does not tell you a binder works. Everything it
+produces is a hypothesis that needs folding validation and then a wet-lab assay.</p>
+<hr />
+<h2 id="0-the-one-paragraph-version">0. The one-paragraph version</h2>
+<p>A binder starts as a <em>blurry</em> sequence — every position is a mixture of all 20
+amino acids at once. Structure predictors are asked "does this bind?", and
+because the whole thing is differentiable, we learn which direction to nudge each
+position to improve the answer. Repeat a few hundred times, then sharpen the
+blur into real amino acids. Because you run many independent attempts from
+different random starts, you get a population of candidates, not one answer.</p>
+<hr />
+<h2 id="1-before-you-start">1. Before you start</h2>
+<p>You need three things on disk. Two of them are one-time-per-target.</p>
+<table>
+<thead>
+<tr>
+<th>Thing</th>
+<th>Command</th>
+<th>Time</th>
+<th>Reuse</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Target FASTA</td>
+<td>you write it</td>
+<td>—</td>
+<td>forever</td>
+</tr>
+<tr>
+<td>Target MSA</td>
+<td><code>msa-search.sbatch</code></td>
+<td>20 min – 2 h</td>
+<td>forever</td>
+</tr>
+<tr>
+<td>Target structure</td>
+<td><code>predict_target.py</code></td>
+<td>~3 min</td>
+<td>forever, and only needed for BoltzGen</td>
+</tr>
+</tbody>
+</table>
+<p>Everything runs on the cluster through <code>sbatch</code>. <strong>Never run these on the login
+node</strong> — they get killed, and it slows the machine down for everyone.</p>
+<h3 id="11-write-your-target-fasta">1.1 Write your target FASTA</h3>
+<p>Put the sequence in <code>targets/yourtarget.fasta</code>:</p>
+<pre><code>&gt;MYTARGET
+MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQ...
+</code></pre>
+<p><strong>Trim it to the domain a binder can actually reach.</strong> This matters more than
+anything else you will do. For a membrane protein, use only the extracellular
+part. Including a transmembrane helix gives the model a greasy segment with no
+membrane to sit in, and it will fold it into the core and distort everything
+around it. UniProt's "Topology" section tells you the boundaries.</p>
+<p>Worked example — human DIO3 (UniProt P55073) is 304 residues:</p>
+<table>
+<thead>
+<tr>
+<th>Residues</th>
+<th>Region</th>
+<th>Include?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1–44</td>
+<td>cytoplasmic</td>
+<td>no</td>
+</tr>
+<tr>
+<td>45–67</td>
+<td>transmembrane</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td>68–304</td>
+<td>extracellular</td>
+<td><strong>yes</strong></td>
+</tr>
+</tbody>
+</table>
+<p>So <code>targets/dio3_ecd.fasta</code> contains residues 68–304 only.</p>
+<p><strong>Non-standard amino acids.</strong> The models only know the standard 20. If your
+sequence has <code>U</code> (selenocysteine), <code>O</code> (pyrrolysine), or ambiguity codes
+(<code>B</code>,<code>Z</code>,<code>J</code>,<code>X</code>), they are automatically swapped for the closest standard
+residue and the substitution is printed. <code>U → C</code> is the usual one and is
+chemically reasonable — selenocysteine is the selenium version of cysteine — but
+<strong>it does change the chemistry at that position</strong>, so do not draw conclusions
+about catalysis from a model built this way.</p>
+<h3 id="12-build-the-msa-once-per-target">1.2 Build the MSA (once per target)</h3>
+<p>An MSA is a pile of evolutionarily related sequences. Structure predictors are
+much more accurate with one. This searches a local database, so nothing is sent
+to an external server.</p>
+<pre><code class="language-bash">cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/mosaic
+mkdir -p logs
+sbatch --export=ALL,TARGET_FASTA=/full/path/targets/yourtarget.fasta,TARGET_NAME=yourtarget \
+       singularity/msa-search.sbatch
+</code></pre>
+<p>Result: <code>mosaic_setup/msa/yourtarget.a3m</code>.</p>
+<p>Time scales steeply with length — a 40-residue query took 22 minutes; a
+237-residue one took nearly 2 hours. Check it found something:</p>
+<pre><code class="language-bash">grep &quot;unique sequences&quot; logs/msa-&lt;jobid&gt;.out
+</code></pre>
+<p>A few thousand is healthy. If it says <strong>"only the query — no homologs found"</strong>,
+your target has no known relatives and predictions will be much less reliable.
+That is a real biological finding, not an error.</p>
+<h3 id="13-predict-the-target-structure-only-if-using-boltzgen">1.3 Predict the target structure (only if using BoltzGen)</h3>
+<pre><code class="language-bash">sbatch singularity/predict-target.sbatch    # see §5 for the BoltzGen route
+</code></pre>
+<p>Check <code>pLDDT: mean</code> in the log. Above 70 is confident, below 50 means the model
+does not know what your target looks like — treat downstream designs with
+suspicion.</p>
+<hr />
+<h2 id="2-launch-a-design-campaign">2. Launch a design campaign</h2>
+<pre><code class="language-bash">sbatch --array=0-15 \
+  --export=ALL,\
+TARGET_FASTA=/full/path/targets/yourtarget.fasta,\
+TARGET_MSA=/full/path/msa/yourtarget.a3m,\
+BINDER_LENGTH=80,\
+MODELS=boltz2+af2,\
+BATCH=2,\
+SOFT_STEPS=100,\
+SHARP_STEPS=25,\
+OUT_DIR=/full/path/designs/yourtarget \
+  singularity/campaign.sbatch
+</code></pre>
+<p>That gives <strong>16 tasks × 2 designs = 32 candidates</strong>, one GPU each, about 15
+minutes per task.</p>
+<blockquote>
+<p><strong>Two traps that produce wrong results silently.</strong></p>
+<ol>
+<li><strong>Use <code>+</code> between model names, never a comma.</strong> <code>MODELS=boltz2,af2</code> is
+   silently truncated to <code>boltz2</code> by the scheduler and you get a single-model
+   run that looks fine. This cost us a whole 8-GPU experiment.</li>
+<li><strong>Always use full absolute paths.</strong> Relative paths resolve differently
+   inside the container.</li>
+</ol>
+<p>After launching, confirm what actually ran:
+<code>bash
+grep "structure backends" logs/campaign-&lt;jobid&gt;_0.out</code>
+It must list every model you asked for.</p>
+</blockquote>
+<hr />
+<h2 id="3-the-knobs-that-matter">3. The knobs that matter</h2>
+<p>Ordered by how much they change your result.</p>
+<h3 id="binder_length-how-long-a-binder-to-design"><code>BINDER_LENGTH</code> — how long a binder to design</h3>
+<p>Typical 60–100. Shorter is easier to make and cheaper to compute; longer gives
+more surface to bind with. 80 is a reasonable default.</p>
+<h3 id="models-which-structure-predictors-must-agree"><code>MODELS</code> — which structure predictors must agree</h3>
+<p>This is the central idea. Asking one model produces designs that exploit that
+model's blind spots. Asking two means a design must satisfy both.</p>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>What it is</th>
+<th>Speed</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>boltz2</code></td>
+<td>Boltz-2, current-generation co-folding</td>
+<td>fast</td>
+<td>best all-round default</td>
+</tr>
+<tr>
+<td><code>boltz1</code></td>
+<td>Boltz-1, previous generation</td>
+<td>slowest</td>
+<td>mainly for comparison</td>
+</tr>
+<tr>
+<td><code>af2</code></td>
+<td>AlphaFold2-multimer</td>
+<td>medium</td>
+<td><strong>cannot use MSAs here</strong> — see below</td>
+</tr>
+<tr>
+<td><code>of3</code></td>
+<td>OpenFold3</td>
+<td>medium</td>
+<td>independent lineage, good for consensus</td>
+</tr>
+<tr>
+<td><code>protenix</code></td>
+<td>Protenix Mini</td>
+<td><strong>fastest</strong> (3×)</td>
+<td>best for quick iteration</td>
+</tr>
+</tbody>
+</table>
+<p>Recommended: <code>boltz2</code> alone while exploring, <code>boltz2+af2</code> or <code>boltz2+of3</code> for
+real campaigns. More models = proportionally more time (adding AF2 took the soft
+stage from 373 s to 630 s).</p>
+<p><strong>AF2 caveat:</strong> mosaic's AF2 interface does not accept MSAs. If you include
+<code>af2</code>, its view of the target is single-sequence even though the others get the
+full MSA. That is a property of the wrapper, not a setting.</p>
+<h3 id="soft_steps-sharp_steps-how-long-to-optimize"><code>SOFT_STEPS</code> / <code>SHARP_STEPS</code> — how long to optimize</h3>
+<p><code>SOFT_STEPS</code> explores while the sequence is still blurry; <code>SHARP_STEPS</code> forces it
+into real amino acids. 100/25 is the default. Fewer than ~50 soft steps and the
+design barely leaves its random start. More than ~200 gives diminishing returns.</p>
+<h3 id="batch-designs-per-gpu"><code>BATCH</code> — designs per GPU</h3>
+<p>Independent attempts running side by side on one GPU. They share the expensive
+one-time compilation, so <code>BATCH=2</code> is much cheaper than two separate jobs.
+2–4 is tested; higher is untested and may exhaust GPU memory.</p>
+<h3 id="-array0-n-how-many-gpus"><code>--array=0-N</code> — how many GPUs</h3>
+<p>Each task is one GPU with a different random start. Total designs = tasks ×
+<code>BATCH</code>. Add <code>%8</code> (e.g. <code>--array=0-63%8</code>) to cap how many run at once.</p>
+<h3 id="cysteine">Cysteine</h3>
+<p>Off by default. Free cysteines in a small binder tend to form wrong disulfides
+and aggregate, so the alphabet excludes them entirely — cysteine is not
+penalized, it is impossible. Pass <code>--no-no-cys</code> to <code>run_design.py</code> if you
+genuinely want them.</p>
+<hr />
+<h2 id="4-reading-your-results">4. Reading your results</h2>
+<p>Each task writes to <code>OUT_DIR</code>:</p>
+<ul>
+<li><code>designs_seed&lt;N&gt;.fasta</code> — sequences, best first</li>
+<li><code>designs_seed&lt;N&gt;.json</code> — the same plus loss values and settings used</li>
+</ul>
+<p>Rank everything:</p>
+<pre><code class="language-bash">cd /full/path/designs/yourtarget
+python3 -c &quot;
+import json,glob
+rows=[]
+for p in glob.glob('*.json'):
+    d=json.load(open(p))
+    rows += [(r['loss'], r['sequence'], d['seed']) for r in d['results']]
+for loss,seq,seed in sorted(rows)[:10]:
+    print(f'{loss:7.3f}  seed{seed}  {seq}')
+&quot;
+</code></pre>
+<h3 id="what-the-loss-means">What the loss means</h3>
+<p><strong>Lower is better, and that is nearly all it means.</strong> It is a weighted sum of
+"is the binder touching the target", "is the binder compact", and "is this a
+plausible sequence". It is <em>not</em> an affinity, a Kd, or a probability.</p>
+<p><strong>Never compare losses between runs with different <code>MODELS</code>.</strong> A two-model run
+must satisfy two critics, so it will show a higher number than a one-model run on
+the same design quality. Comparing them is meaningless.</p>
+<h3 id="sanity-checks-before-you-get-excited">Sanity checks before you get excited</h3>
+<ol>
+<li><strong>Composition.</strong> Real proteins are a mix. A design that is 40% valine has
+   gamed the objective. Compare against natural frequencies.</li>
+<li><strong>Spread.</strong> If every design across every seed is nearly identical, the
+   optimizer collapsed and you have one answer, not thirty.</li>
+<li><strong>Fold them properly.</strong> Design uses 1 recycling step for speed. Re-fold your
+   top candidates at higher settings before believing anything.</li>
+</ol>
+<hr />
+<h2 id="5-the-boltzgen-route-optional">5. The BoltzGen route (optional)</h2>
+<p>Two different kinds of model live here:</p>
+<ul>
+<li><strong>Scoring models</strong> (Boltz, AF2, OpenFold3, Protenix) answer "does this
+  sequence bind?" and can be optimized against.</li>
+<li><strong>Generative models</strong> (BoltzGen, Proteina) <em>propose</em> structures directly. They
+  cannot be optimized against — there is no question to differentiate.</li>
+</ul>
+<p>So BoltzGen is used <em>before</em> the optimizer, to suggest starting points:</p>
+<pre><code class="language-bash"># 1. target structure (needs the CIF, not just sequence)
+sbatch singularity/predict-target.sbatch
+# 2. generate proposals — fast, ~2.5 s per design
+sbatch singularity/boltzgen.sbatch
+# 3. refine them
+sbatch --array=0-3 --export=ALL,INIT_FASTA=/full/path/designs/.../boltzgen_designs.fasta,... \
+       singularity/campaign.sbatch
+</code></pre>
+<p><strong>Honest status: this does not currently help.</strong> BoltzGen's raw output looks
+<em>more</em> protein-like than optimized designs, but refinement keeps only ~15% of the
+seed sequence — the optimizer walks away and lands where it would have anyway.
+Losses were not meaningfully better.</p>
+<p>If you want to make this work, the lever is to stop the optimizer destroying the
+proposal: fewer soft steps, or anchor most positions and let only the interface
+move. Watch <strong>sequence identity to the seed</strong>, not loss — that is the number that
+reveals what is happening.</p>
+<hr />
+<h2 id="6-when-something-goes-wrong">6. When something goes wrong</h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Meaning</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Job vanishes instantly</td>
+<td>scheduler rejected it</td>
+<td><code>sacct -j &lt;id&gt;</code> — usually wrong partition/account</td>
+</tr>
+<tr>
+<td><code>AssocMaxSubmitJobLimit</code></td>
+<td>wrong account</td>
+<td>must be <code>kempner_bsabatini_lab</code></td>
+</tr>
+<tr>
+<td>Only one model in the log</td>
+<td>comma in <code>MODELS</code></td>
+<td>use <code>+</code></td>
+</tr>
+<tr>
+<td><code>RESOURCE_EXHAUSTED</code> / OOM</td>
+<td>too much on one GPU</td>
+<td>lower <code>BATCH</code>, or fewer models</td>
+</tr>
+<tr>
+<td>MSA says "only the query"</td>
+<td>no homologs exist</td>
+<td>expected for orphans; predictions weaker</td>
+</tr>
+<tr>
+<td>All designs identical</td>
+<td>collapsed run</td>
+<td>more seeds, check the loss is not saturated</td>
+</tr>
+<tr>
+<td>Sequences look like garbage</td>
+<td>too few steps, or objective imbalance</td>
+<td>raise <code>SOFT_STEPS</code>; check composition</td>
+</tr>
+</tbody>
+</table>
+<p>Every job writes a log to <code>logs/</code>. The first thing to read is always:</p>
+<pre><code class="language-bash">grep -E &quot;structure backends|target MSA|seeded|best loss&quot; logs/campaign-&lt;jobid&gt;_0.out
+</code></pre>
+<p>Those four lines tell you what the job actually did, which is not always what you
+thought you asked for.</p>
+<hr />
+<h2 id="7-working-with-claude-code">7. Working with Claude Code</h2>
+<p>This repo ships helper skills. In a Claude Code session, just say what you want:</p>
+<ul>
+<li><em>"set up a new target from this UniProt ID"</em> → <code>new-target</code></li>
+<li><em>"launch a design campaign against X"</em> → <code>launch-campaign</code></li>
+<li><em>"how did my designs turn out?"</em> → <code>inspect-designs</code></li>
+</ul>
+<p>They handle path wiring, the <code>+</code> separator trap, and the post-launch checks that
+catch silent misconfiguration.</p></div></body></html>

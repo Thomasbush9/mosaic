@@ -167,3 +167,75 @@ def consensus_epitope(cif_paths: list[Path], min_fraction: float = 0.3,
     notes.append(f"epitope from {used} complexes, residues contacted by "
                  f">={threshold} of them")
     return ep, notes
+
+
+def parse_positions(text: str) -> list[int]:
+    """"95-110,143" -> sorted 1-based positions."""
+    out: list[int] = []
+    for chunk in (text or "").replace(" ", "").split(","):
+        if not chunk:
+            continue
+        if "-" in chunk.lstrip("-"):
+            a, b = chunk.split("-", 1)
+            out.extend(range(int(a), int(b) + 1))
+        else:
+            out.append(int(chunk))
+    return sorted(set(out))
+
+
+def as_res_index(positions: list[int]) -> str:
+    """Format 1-based positions for BoltzGen's include/res_index.
+
+    Its parser is 1-based and spells ranges with '..' rather than '-'
+    (boltzgen/data/parse/schema.py:646-664).
+    """
+    if not positions:
+        return ""
+    parts, start, prev = [], positions[0], positions[0]
+    for v in positions[1:] + [None]:
+        if v is not None and v == prev + 1:
+            prev = v
+            continue
+        parts.append(f"{start}" if start == prev else f"{start}..{prev}")
+        if v is not None:
+            start = prev = v
+    return ",".join(parts)
+
+
+def pocket_residues(cif_path, hotspots1: list[int], shell: float,
+                    chain_id: str = "A") -> list[int]:
+    """Target residues within `shell` of any hotspot, as 1-based positions.
+
+    Cropping to bare hotspots would hand the model a handful of disconnected
+    residues; a proximity shell gives it a coherent surface patch to design
+    against.
+    """
+    import gemmi
+
+    st = gemmi.read_structure(str(cif_path))
+    st.setup_entities()
+    st.remove_hydrogens()
+    model = st[0]
+    names = [c.name for c in model]
+    chain = model[chain_id] if chain_id in names else max(model, key=len)
+    residues = list(chain)
+    hot = [residues[i - 1] for i in hotspots1 if 1 <= i <= len(residues)]
+    if not hot:
+        return []
+    keep = set(hotspots1)
+    for i, res in enumerate(residues, start=1):
+        if i in keep:
+            continue
+        for a1 in res:
+            done = False
+            for h in hot:
+                for a2 in h:
+                    if a1.pos.dist(a2.pos) <= shell:
+                        keep.add(i)
+                        done = True
+                        break
+                if done:
+                    break
+            if done:
+                break
+    return sorted(keep)

@@ -19,6 +19,7 @@ import design_config as dc  # noqa: E402
 
 import cluster  # noqa: E402
 import store  # noqa: E402
+import viewer  # noqa: E402
 from ui_helpers import params_block, parse_ranges, show_selection, widget  # noqa: E402
 
 
@@ -173,6 +174,16 @@ def render(cfg: dict) -> dict:
             st.error(f"Paratope: {e}")
         if pt:
             st.caption(f"Paratope — {len(pt)} of {length} binder positions")
+
+    if tgt.structure and (ep or pt):
+        with st.expander("3D — where this binds", expanded=False):
+            viewer.legend([("target", viewer.C_TARGET),
+                           ("epitope", viewer.C_HOTSPOT)])
+            viewer.show(viewer.target_view(tgt.structure, ep, clickable=True))
+            st.caption("Click a residue to label it with its number.")
+    elif not tgt.structure:
+        st.caption("Predict a structure in the Generate tab to pick the "
+                   "epitope visually.")
 
     if ep:
         st.info(

@@ -20,6 +20,7 @@ import design_config as dc  # noqa: E402
 import cluster  # noqa: E402
 import store  # noqa: E402
 import proposals as P  # noqa: E402
+import viewer  # noqa: E402
 from ui_helpers import params_block, parse_ranges, show_selection  # noqa: E402
 
 
@@ -98,8 +99,30 @@ def render(cfg: dict) -> None:
             for e in herrs:
                 st.error(f"Hotspots: {e}")
             show_selection(tgt.sequence, hot, "Hotspots")
+            if tgt.structure:
+                with st.expander("3D — pick hotspots off the structure",
+                                 expanded=bool(hot)):
+                    st.caption(
+                        "Click a residue to label it with its number, then type "
+                        "that into the box above. py3Dmol renders in an iframe "
+                        "with no channel back to Python, so clicks cannot fill "
+                        "the field directly.")
+                    viewer.legend([("target", viewer.C_TARGET),
+                                   ("hotspots", viewer.C_HOTSPOT)])
+                    viewer.show(viewer.target_view(
+                        tgt.structure, hot, chain=params.get("target_chain", "A")))
             if not hot:
-                st.caption("No hotspots — Proteina will choose where to bind.")
+                st.caption(
+                    "No hotspots — the generator chooses where to bind."
+                    if gname == "proteina" else
+                    "No hotspots — BoltzGen sees the whole target and picks a site.")
+            elif gname == "boltzgen":
+                st.caption(
+                    "BoltzGen has no attractive hotspot term, so these work by "
+                    "**cropping** the target to a pocket around them — the "
+                    "binder has nowhere else to go. The job log reports how many "
+                    "residues survive; if that is most of the target, reduce the "
+                    "shell or the crop is not constraining anything.")
 
         out_dir = store.sub("designs") / f"{tgt.name}_{gname}"
         st.caption(f"Output: `{out_dir}`")
@@ -135,6 +158,8 @@ def render(cfg: dict) -> None:
             }
             if meta.get("hotspots"):
                 exports["HOTSPOTS"] = ",".join(str(h) for h in hot)
+                if "hotspot_shell" in params:
+                    exports["HOTSPOT_SHELL"] = str(params["hotspot_shell"])
             script = ("singularity/proteina.sbatch" if gname == "proteina"
                       else "singularity/boltzgen.sbatch")
             ok, msg, jid = cluster.submit_script(script, exports, account=account)
@@ -174,6 +199,19 @@ def render(cfg: dict) -> None:
     st.dataframe([{"#": i, "length": len(s), "sequence": s}
                   for i, s in enumerate(ps.sequences)],
                  hide_index=True, width="stretch")
+
+    cifs = sorted((store.sub("designs") / pick).glob("design_*.cif"))
+    if cifs:
+        st.markdown("**3D — binder on target**")
+        which = st.select_slider("Design", options=list(range(len(cifs))),
+                                 value=0, key="gen_design_pick")
+        viewer.legend([("target", viewer.C_TARGET), ("binder", viewer.C_BINDER),
+                       ("epitope", viewer.C_HOTSPOT)])
+        viewer.show(viewer.complex_view(
+            cifs[which], binder_length=ps.binder_length,
+            epitope1=[i + 1 for i in ps.epitope_idx]))
+        st.caption(f"`{cifs[which].name}` — sequence "
+                   f"`{ps.sequences[which] if which < len(ps.sequences) else ''}`")
 
     with st.expander("Generation settings"):
         st.json(ps.params)

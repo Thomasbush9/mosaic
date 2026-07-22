@@ -258,7 +258,13 @@ GENERATIVE_MODELS: dict[str, dict[str, Any]] = {
             "recycling_steps": {"type": "int", "default": 3, "min": 1, "max": 10},
             "target_chain": {"type": "choice", "default": "A",
                              "options": list("ABCDEFGH")},
+            "hotspot_shell": {"type": "float", "default": 6.0, "min": 3.0,
+                              "max": 20.0,
+                              "help": "target residues within this distance of a "
+                                      "hotspot are kept; a shell that keeps most "
+                                      "of the protein does not constrain anything"},
         },
+        "hotspots": True,
     },
     "proteina": {
         "label": "Proteina",

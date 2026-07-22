@@ -30,4 +30,7 @@ REPO="${MOSAIC_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
   --target-fasta "${TARGET_FASTA:-}" \
   --target-name "${TARGET_NAME:-}" \
   --contact-cutoff "${CONTACT_CUTOFF:-8.0}" \
+  --hotspots "${HOTSPOTS:-}" \
+  --hotspot-shell "${HOTSPOT_SHELL:-6.0}" \
+  --target-chain "${TARGET_CHAIN:-A}" \
   --out "${OUT_DIR:-$SETUP/designs/boltzgen}"

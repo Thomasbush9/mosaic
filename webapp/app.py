@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import design_config as dc  # noqa: E402
+import docs_tab  # noqa: E402
 import generate_tab  # noqa: E402
 import launch_tab  # noqa: E402
 import monitor_tab  # noqa: E402
@@ -117,8 +118,8 @@ with st.sidebar:
                "their output.")
     st.caption("Docs: `docs/MANUAL.md` · `docs/MODELS.md` · `docs/WEBAPP.md`")
 
-launch, generate, monitor, results = st.tabs(
-    ["Launch", "Generate", "Monitor", "Results"])
+launch, generate, monitor, results, docs = st.tabs(
+    ["Launch", "Generate", "Monitor", "Results", "Docs"])
 
 with launch:
     st.session_state[key] = launch_tab.render(st.session_state[key])
@@ -131,3 +132,6 @@ with monitor:
 
 with results:
     results_tab.render()
+
+with docs:
+    docs_tab.render()

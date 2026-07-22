@@ -1,0 +1,259 @@
+<!doctype html><html><head><meta charset='utf-8'><title>mosaic — Models</title>
+<style>
+.mosaic-doc { max-width: 62rem; line-height: 1.6; font-size: 0.95rem; }
+.mosaic-doc h1 { font-size: 1.7rem; margin: 0 0 .3em; }
+.mosaic-doc h2 { font-size: 1.3rem; margin: 1.6em 0 .4em;
+                 border-bottom: 1px solid rgba(128,128,128,.25);
+                 padding-bottom: .25em; }
+.mosaic-doc h3 { font-size: 1.05rem; margin: 1.2em 0 .3em; }
+.mosaic-doc code { background: rgba(128,128,128,.14); padding: .12em .35em;
+                   border-radius: 4px; font-size: .88em; }
+.mosaic-doc pre { background: rgba(128,128,128,.12); padding: .8em 1em;
+                  border-radius: 6px; overflow-x: auto; }
+.mosaic-doc pre code { background: none; padding: 0; }
+.mosaic-doc table { border-collapse: collapse; margin: 1em 0; width: 100%;
+                    display: block; overflow-x: auto; }
+.mosaic-doc th, .mosaic-doc td { border: 1px solid rgba(128,128,128,.3);
+                                 padding: .45em .7em; text-align: left; }
+.mosaic-doc th { background: rgba(128,128,128,.12); }
+.mosaic-doc blockquote { border-left: 3px solid rgba(128,128,128,.45);
+                         margin: 1em 0; padding: .2em 0 .2em 1em; opacity: .9; }
+.mosaic-doc img { max-width: 100%; }
+</style>
+</head><body><div class='mosaic-doc'><h1 id="the-models-in-plain-terms">The models, in plain terms</h1>
+<p>Companion to <code>MANUAL.md</code>. What each model is, what it is good at, what it costs,
+and which settings actually change its behaviour.</p>
+<hr />
+<h2 id="two-kinds-of-model">Two kinds of model</h2>
+<p>This is the distinction that explains most of the design of the pipeline.</p>
+<p><strong>Scoring models</strong> take a sequence and predict a structure. Because that
+prediction is differentiable, you can ask "which direction should I nudge residue
+17 to make this bind better?" and get an answer. These are the models you
+optimize <em>against</em>. All of §1 below.</p>
+<p><strong>Generative models</strong> produce structures directly by denoising. There is no
+question to differentiate — they do not score a sequence you hand them. They are
+used to <em>propose</em> candidates, not to refine them. §2 below.</p>
+<p>Practically: only scoring models can go in <code>MODELS=</code>. Asking for
+<code>MODELS=boltzgen</code> is not a configuration you have got wrong — it is not a thing
+that exists.</p>
+<hr />
+<h2 id="1-scoring-models-usable-in-models">1. Scoring models (usable in <code>MODELS=</code>)</h2>
+<h3 id="boltz2-boltz-2"><code>boltz2</code> — Boltz-2</h3>
+<p><strong>Default choice.</strong> Current-generation co-folding model: it predicts the target
+and binder together as one complex, which is what you want when the question is
+whether they touch.</p>
+<ul>
+<li><strong>Uses your MSA:</strong> yes, up to 8192 alignment rows.</li>
+<li><strong>Cost:</strong> ~91 s for 5 optimization steps (237-residue target, 80-residue
+  binder, 2 designs).</li>
+<li><strong>Weights:</strong> 2.2 GB, shared from the Kempner lab store.</li>
+<li>Good general accuracy on protein–protein interfaces. If you run one model,
+  run this one.</li>
+</ul>
+<h3 id="boltz1-boltz-1"><code>boltz1</code> — Boltz-1</h3>
+<p>Previous generation of the same lineage. Slowest of the set (~124 s / 5 steps)
+and generally superseded by Boltz-2. Keep it for comparison when you want to know
+whether a result depends on model generation, not for production campaigns.</p>
+<p>Uses your MSA. Also needs a chemical-component dictionary (<code>ccd.pkl</code>), which is
+already staged.</p>
+<h3 id="af2-alphafold2-multimer"><code>af2</code> — AlphaFold2-multimer</h3>
+<p>The familiar one, and useful precisely <em>because</em> it is a different lineage from
+Boltz — a design that satisfies both is less likely to be exploiting a quirk of
+either.</p>
+<ul>
+<li><strong>Cannot use MSAs in this pipeline.</strong> mosaic's AF2 interface rejects them
+  outright. If you include <code>af2</code>, its view of your target is single-sequence
+  while the other models get the full alignment. This is a property of the
+  wrapper, not something you can switch on.</li>
+<li><strong>Cost:</strong> ~109 s / 5 steps.</li>
+<li><strong>Weights:</strong> 5.2 GB (all five multimer models are loaded and one is chosen per
+  evaluation).</li>
+<li>Note it required a compatibility patch to run at all here — the upstream
+  <code>dm-haiku</code> release is incompatible with our JAX version. That is handled inside
+  the container; you should never see it.</li>
+</ul>
+<h3 id="of3-openfold3"><code>of3</code> — OpenFold3</h3>
+<p>Open re-implementation in the AlphaFold3 lineage. Another genuinely independent
+opinion, which is its main value in a consensus objective.</p>
+<ul>
+<li><strong>Uses your MSA:</strong> yes.</li>
+<li><strong>Cost:</strong> ~92 s / 5 steps — comparable to Boltz-2.</li>
+<li><strong>Weights:</strong> 2.2 GB.</li>
+</ul>
+<h3 id="protenix-protenix-mini"><code>protenix</code> — Protenix Mini</h3>
+<p><strong>Fastest by a wide margin</strong> — ~39 s / 5 steps, roughly 3× quicker than anything
+else. Use it while you are still deciding what you want: binder length, loss
+weights, how many steps. Then confirm with Boltz-2.</p>
+<ul>
+<li><strong>Uses your MSA:</strong> yes.</li>
+<li><strong>Weights:</strong> 512 MB (the "Mini" checkpoint; larger Protenix variants exist and
+  are not staged).</li>
+</ul>
+<h3 id="sequence-models-always-on-not-in-models">Sequence models (always on, not in <code>MODELS=</code>)</h3>
+<p><strong>ESM-C</strong> is a protein language model. It does not predict structure — it judges
+whether a sequence <em>looks like a real protein</em>. Without it, structure models
+happily accept sequences no organism would tolerate.</p>
+<p>It is added automatically with weight 0.5 and <strong>clipped</strong>. Clipping matters: an
+unclipped language-model score is trivially maximized by repeating one favourable
+residue, and you get homopolymers. The clip caps how much the objective can be
+improved this way.</p>
+<p><strong>AbLang / AbLang2</strong> are the antibody-specific equivalents, for VH/VL sequences.
+Staged and working, but not wired into <code>run_design.py</code> — they are for antibody
+campaigns, which need a different setup than a de novo mini-binder.</p>
+<hr />
+<h2 id="2-generative-models-not-usable-in-models">2. Generative models (not usable in <code>MODELS=</code>)</h2>
+<h3 id="boltzgen-boltzgen"><code>boltzgen</code> — BoltzGen</h3>
+<p>Generates binder <strong>backbones</strong> against a target structure by diffusion, then
+reads off which amino acid each position looks like from where the sidechain
+atoms landed.</p>
+<ul>
+<li><strong>Needs a target <em>structure</em> (CIF), not a sequence.</strong> Run <code>predict_target.py</code>
+  first.</li>
+<li><strong>You specify the fold.</strong> A secondary-structure string like
+  <code>24×H, 4×L, 24×H, 4×L, 24×H</code> requests a three-helix bundle — the standard de
+  novo mini-binder architecture.</li>
+<li><strong>Very fast:</strong> ~50 s once to set up, then ~2.5 s per design.</li>
+<li><strong>Output quality is visibly good</strong> — the sequences look like designed proteins
+  in a way that optimizer output often does not.</li>
+</ul>
+<p>See <code>MANUAL.md</code> §5 for the honest status of combining it with the optimizer
+(short version: it does not currently help, and why).</p>
+<h3 id="proteina-proteina"><code>proteina</code> — Proteina</h3>
+<p>Also generative (a flow-matching backbone model). Staged and loads correctly, but
+not yet wired into any workflow here. Listed so you know it exists and why it is
+not an option in <code>MODELS=</code>.</p>
+<hr />
+<h2 id="3-parameters-and-what-they-actually-do">3. Parameters, and what they actually do</h2>
+<h3 id="parameters-you-set">Parameters you set</h3>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Meaning</th>
+<th>Sensible range</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>BINDER_LENGTH</code></td>
+<td>residues in the designed binder</td>
+<td>60–100</td>
+</tr>
+<tr>
+<td><code>MODELS</code></td>
+<td>scoring models that must agree (<code>+</code>-separated)</td>
+<td>1–2</td>
+</tr>
+<tr>
+<td><code>SOFT_STEPS</code></td>
+<td>optimization while the sequence is blurry</td>
+<td>50–200</td>
+</tr>
+<tr>
+<td><code>SHARP_STEPS</code></td>
+<td>forcing it into real amino acids</td>
+<td>20–50</td>
+</tr>
+<tr>
+<td><code>BATCH</code></td>
+<td>independent designs per GPU</td>
+<td>2–4</td>
+</tr>
+<tr>
+<td><code>--array=0-N</code></td>
+<td>number of GPUs</td>
+<td>as many as you want</td>
+</tr>
+</tbody>
+</table>
+<h3 id="parameters-set-for-you-and-why">Parameters set for you (and why)</h3>
+<p><strong><code>recycling_steps = 1</code>.</strong> Structure models refine their own prediction by
+feeding it back in. More passes are more accurate but proportionally slower, so
+design uses 1 and final validation uses 4–20.</p>
+<p><em>This must never be 0.</em> At 0 the model's main computation is skipped entirely and
+the objective stops depending on the sequence at all — producing a believable
+loss with a gradient of exactly zero. It looks like it is working. It is
+optimizing nothing.</p>
+<p><strong><code>sampling_steps</code> (~25).</strong> Diffusion steps used to generate coordinates. Only
+matters for losses that read 3D positions; the contact-based objective here is
+computed from the distance map, so it is largely irrelevant.</p>
+<p><strong><code>num_samples</code>.</strong> How many structures to average per evaluation. More is more
+robust, and multiplies both memory and time. Left at defaults — robustness here
+comes from running many independent designs instead.</p>
+<p><strong>ESM-C weight 0.5, clipped to [2, 100].</strong> See above. Raising the weight pushes
+toward more natural sequences at some cost to predicted binding; this is the
+first knob to reach for if your designs look chemically implausible.</p>
+<hr />
+<h2 id="4-cost-measured">4. Cost, measured</h2>
+<p>Seconds for 5 optimization steps, 2 designs, 237-residue target + 80-residue
+binder, on one H100:</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Protenix Mini</td>
+<td>39 s</td>
+</tr>
+<tr>
+<td>Boltz-2</td>
+<td>91 s</td>
+</tr>
+<tr>
+<td>OpenFold3</td>
+<td>92 s</td>
+</tr>
+<tr>
+<td>AF2 multimer</td>
+<td>109 s</td>
+</tr>
+<tr>
+<td>Boltz-1</td>
+<td>124 s</td>
+</tr>
+</tbody>
+</table>
+<p>Costs add when you combine models: Boltz-2 alone ran 100 steps in 373 s;
+Boltz-2 + AF2 took 630 s.</p>
+<p>A full campaign task — 100 soft + 25 sharp steps, 2 designs, two models — takes
+about <strong>15 minutes on one GPU</strong>. Thirty-two candidates from a 16-GPU array is
+roughly a quarter of an hour of wall time.</p>
+<hr />
+<h2 id="5-choosing-a-combination">5. Choosing a combination</h2>
+<table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Trying settings, want fast feedback</td>
+<td><code>protenix</code></td>
+</tr>
+<tr>
+<td>Standard campaign</td>
+<td><code>boltz2</code></td>
+</tr>
+<tr>
+<td>Want robustness against model quirks</td>
+<td><code>boltz2+of3</code> or <code>boltz2+af2</code></td>
+</tr>
+<tr>
+<td>Checking a result is not model-specific</td>
+<td>rerun the winner through a different single model</td>
+</tr>
+<tr>
+<td>Antibody rather than de novo binder</td>
+<td>AbLang/AbLang2 — needs a different setup, ask</td>
+</tr>
+</tbody>
+</table>
+<p>Two models is a reasonable ceiling. Three roughly triples the cost for a
+diminishing return, and it is usually better to spend that GPU time on more
+independent seeds.</p></div></body></html>
