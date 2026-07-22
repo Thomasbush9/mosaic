@@ -70,7 +70,7 @@ def render() -> None:
 
     c1, c2 = st.columns([2, 1])
     campaign = c1.selectbox("Campaign", campaigns, index=len(campaigns) - 1)
-    if c2.button("Refresh"):
+    if c2.button("Refresh", key="res_refresh"):
         st.rerun()
 
     rows = store.load_designs(campaign)
@@ -121,7 +121,7 @@ def render() -> None:
         width="stretch", hide_index=True,
     )
     st.download_button(
-        "Download FASTA",
+        "Download FASTA", key="res_fasta",
         data="".join(
             f">{campaign}_seed{r['seed']}_traj{r['trajectory']}_loss{r['loss']:.4f}\n"
             f"{r['sequence']}\n" for r in shown),

@@ -20,7 +20,7 @@ def render() -> None:
 
     st.subheader("Queue")
     c1, c2 = st.columns([1, 3])
-    if c1.button("Refresh"):
+    if c1.button("Refresh", key="mon_refresh"):
         st.rerun()
     mine = c2.checkbox("Only my jobs", value=True)
 
@@ -43,9 +43,13 @@ def render() -> None:
     )
 
     last = st.session_state.get("last_job") or {}
-    job_id = st.text_input("Job ID", value=last.get("id", ""))
+    job_id = st.text_input("Job ID", value=last.get("id", ""), key="mon_jobid")
     if not job_id:
-        st.stop()
+        # Return, never st.stop(): st.stop() halts the WHOLE script, so an empty
+        # box here silently prevented every later tab from rendering at all —
+        # which looked like "Results is empty" rather than like a bug in Monitor.
+        st.caption("Enter a job ID, or submit a campaign to have it filled in.")
+        return
 
     expect_models = last.get("models") if last.get("id") == job_id else None
     expect_msa = last.get("expect_msa", True) if last.get("id") == job_id else True
@@ -89,6 +93,6 @@ def render() -> None:
         st.code(cluster.tail(logs[names.index(pick)], n_lines))
 
     st.divider()
-    if st.button("Cancel this job", type="secondary"):
+    if st.button("Cancel this job", type="secondary", key="mon_cancel"):
         ok, msg = cluster.cancel(job_id)
         (st.success if ok else st.error)(msg or ("cancelled" if ok else "failed"))
