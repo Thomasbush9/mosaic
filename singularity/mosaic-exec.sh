@@ -91,6 +91,13 @@ bind_cache hf        .cache/huggingface
 binds+=(-B "$MOSAIC_SCRATCH/jax_cache:/jax_cache")
 binds+=(-B "$MOSAIC_SCRATCH/out:/work")
 
+# Singularity inherits the host environment, so a host-side HF_HOME (set in
+# ~/.bashrc to keep weights off the home quota) would follow us in and point at
+# a host path instead of the bind above. mosaic.def deliberately leaves HF_HOME
+# unset precisely so the bind is what decides; pin it to the container-side path
+# here so the result does not depend on the caller's shell.
+export SINGULARITYENV_HF_HOME="$CHOME/.cache/huggingface"
+
 cmd=(singularity exec $MOSAIC_GPU_FLAG -H "$CHOME" "${binds[@]}" "$MOSAIC_SIF" "$@")
 
 if [[ $SHOW_ONLY -eq 1 ]]; then
