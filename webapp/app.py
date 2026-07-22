@@ -118,8 +118,12 @@ with st.sidebar:
                "their output.")
     st.caption("Docs: `docs/MANUAL.md` · `docs/MODELS.md` · `docs/WEBAPP.md`")
 
-launch, generate, monitor, results, docs = st.tabs(
-    ["Launch", "Generate", "Monitor", "Results", "Docs"])
+# Generate first: it is the first stage of the pipeline (propose candidates),
+# and Launch consumes what it produces. Note Launch still RENDERS first below —
+# tab order is presentation, but a proposal shipped from Generate must be
+# applied before Launch draws its widgets, or the prefill lands a rerun late.
+generate, launch, monitor, results, docs = st.tabs(
+    ["Generate", "Launch", "Monitor", "Results", "Docs"])
 
 with launch:
     st.session_state[key] = launch_tab.render(st.session_state[key])

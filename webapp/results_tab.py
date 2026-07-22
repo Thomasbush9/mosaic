@@ -10,7 +10,6 @@ from __future__ import annotations
 import streamlit as st
 
 import store
-import viewer
 
 # Validated categorical palette, fixed order, never cycled.
 C_DESIGN, C_NATURAL = "#2a78d6", "#1baf7a"

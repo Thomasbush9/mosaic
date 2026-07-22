@@ -1,4 +1,5 @@
-"""3D structure views: target with hotspots, and binder+target complexes.
+"""3D structure view: the target cartoon with hotspots highlighted, for picking
+a binding site off an uploaded or predicted structure.
 
 Uses py3Dmol, embedded through streamlit.components. Selection is read-only in
 the sense that matters: py3Dmol renders inside an iframe with no channel back to
@@ -78,39 +79,6 @@ def target_view(cif_path: Path, hotspots1: list[int] | None = None,
                        {"cartoon": {"color": C_HOTSPOT},
                         "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}}))
     return _view_html([("cif", data)], styles, height=height, clickable=clickable)
-
-
-def complex_view(cif_path: Path, binder_length: int | None = None,
-                 epitope1: list[int] | None = None, height: int = 480) -> str:
-    """Binder + target, with the contacted epitope highlighted.
-
-    Chains are distinguished by LENGTH, not name: BoltzGen's writer emits the
-    binder as chain A and the target as chain B even though its YAML declares
-    the binder as B, so keying off names shows the wrong thing.
-    """
-    import gemmi
-
-    path = Path(cif_path)
-    st_ = gemmi.read_structure(str(path))
-    st_.setup_entities()
-    chains = [c for c in st_[0] if len(c) > 0]
-    if len(chains) < 2:
-        return target_view(path, epitope1, height=height, clickable=False)
-    if binder_length is not None:
-        binder = min(chains, key=lambda c: abs(len(c) - binder_length))
-    else:
-        binder = min(chains, key=len)
-    target = max((c for c in chains if c.name != binder.name), key=len)
-
-    styles = [
-        ({"chain": target.name}, {"cartoon": {"color": C_TARGET, "opacity": 0.85}}),
-        ({"chain": binder.name}, {"cartoon": {"color": C_BINDER}}),
-    ]
-    if epitope1:
-        styles.append(({"chain": target.name, "resi": [str(i) for i in epitope1]},
-                       {"cartoon": {"color": C_HOTSPOT},
-                        "stick": {"colorscheme": "orangeCarbon", "radius": 0.2}}))
-    return _view_html([("cif", path.read_text())], styles, height=height)
 
 
 def legend(items: list[tuple[str, str]]) -> None:

@@ -200,18 +200,6 @@ def render(cfg: dict) -> None:
                   for i, s in enumerate(ps.sequences)],
                  hide_index=True, width="stretch")
 
-    cifs = sorted((store.sub("designs") / pick).glob("design_*.cif"))
-    if cifs:
-        st.markdown("**3D — binder on target**")
-        which = st.select_slider("Design", options=list(range(len(cifs))),
-                                 value=0, key="gen_design_pick")
-        viewer.legend([("target", viewer.C_TARGET), ("binder", viewer.C_BINDER),
-                       ("epitope", viewer.C_HOTSPOT)])
-        viewer.show(viewer.complex_view(
-            cifs[which], binder_length=ps.binder_length,
-            epitope1=[i + 1 for i in ps.epitope_idx]))
-        st.caption(f"`{cifs[which].name}` — sequence "
-                   f"`{ps.sequences[which] if which < len(ps.sequences) else ''}`")
 
     with st.expander("Generation settings"):
         st.json(ps.params)
