@@ -11,9 +11,11 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from store import REPO, SETUP
+from store import REPO
 
-ACCOUNT = "kempner_bsabatini_lab"   # bsabatini_lab has MaxSubmit=0 and cannot submit
+# bsabatini_lab has MaxJobs=0/MaxSubmit=0 and cannot submit anything, so this is
+# the default rather than a suggestion. Overridable per campaign in the UI.
+DEFAULT_ACCOUNT = "kempner_bsabatini_lab"
 GPU_PARTITIONS = ["kempner_h100", "kempner_h200", "kempner_requeue"]
 CPU_PARTITION = "kempner_interactive"  # GPU partitions reject jobs with no GPU
 
@@ -33,6 +35,7 @@ def _run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess
 
 def submit_campaign(config_path: Path, out_dir: Path, n_tasks: int,
                     throttle: int | None = None, partition: str = "kempner_h100",
+                    account: str = DEFAULT_ACCOUNT,
                     time_limit: str = "08:00:00", mem: str = "128G",
                     cpus: int = 8) -> tuple[bool, str, str | None]:
     """Queue a campaign array. Returns (ok, output, job_id).
@@ -53,7 +56,7 @@ def submit_campaign(config_path: Path, out_dir: Path, n_tasks: int,
         "sbatch", "--parsable",
         f"--array={array}",
         f"--partition={partition}",
-        f"--account={ACCOUNT}",
+        f"--account={account}",
         f"--time={time_limit}",
         f"--mem={mem}",
         f"--cpus-per-task={cpus}",
@@ -66,10 +69,16 @@ def submit_campaign(config_path: Path, out_dir: Path, n_tasks: int,
     return ok, (p.stdout + p.stderr).strip(), job_id
 
 
-def submit_script(script: str, exports: dict[str, str]) -> tuple[bool, str, str | None]:
+def submit_script(script: str, exports: dict[str, str],
+                  account: str = DEFAULT_ACCOUNT,
+                  partition: str | None = None) -> tuple[bool, str, str | None]:
     """Queue one of the helper jobs (MSA search, structure prediction, BoltzGen)."""
     ex = ",".join(["ALL"] + [f"{k}={v}" for k, v in exports.items()])
-    p = _run(["sbatch", "--parsable", f"--export={ex}", script], cwd=REPO)
+    cmd = ["sbatch", "--parsable", f"--account={account}"]
+    if partition:
+        cmd.append(f"--partition={partition}")
+    cmd += [f"--export={ex}", script]
+    p = _run(cmd, cwd=REPO)
     ok = p.returncode == 0
     return ok, (p.stdout + p.stderr).strip(), (p.stdout.strip().split(";")[0] if ok else None)
 
@@ -167,3 +176,34 @@ def progress(job_id: str, n_tasks: int) -> tuple[int, int, int]:
         elif st in ("RUNNING", "PENDING"):
             running += 1
     return done, failed, running
+
+
+def accounts(user: str | None = None) -> list[str]:
+    """Accounts this user can actually submit under.
+
+    Worth querying rather than hardcoding: an association with MaxSubmit=0
+    accepts nothing, and the rejection (AssocMaxSubmitJobLimit) arrives at
+    submit time with no hint about which account to use instead.
+    """
+    import os
+    u = user or os.environ.get("USER", "")
+    p = _run(["sacctmgr", "-nP", "show", "assoc", f"user={u}",
+              "format=Account,MaxSubmit"])
+    out = []
+    for line in p.stdout.strip().splitlines():
+        parts = line.split("|")
+        if not parts or not parts[0]:
+            continue
+        limit = parts[1] if len(parts) > 1 else ""
+        if limit.strip() == "0":
+            continue          # cannot submit under this one
+        if parts[0] not in out:
+            out.append(parts[0])
+    return out or [DEFAULT_ACCOUNT]
+
+
+def partitions() -> list[str]:
+    p = _run(["sinfo", "-h", "-o", "%P"])
+    names = sorted({x.strip().rstrip("*") for x in p.stdout.split() if x.strip()})
+    gpu = [n for n in names if "gpu" in n or "kempner" in n]
+    return gpu or GPU_PARTITIONS

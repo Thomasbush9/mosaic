@@ -9,3 +9,9 @@
 # See docs/WEBAPP.md.
 streamlit>=1.40
 plotly>=5.0
+
+# st.dataframe serialises through Arrow; without these it raises
+# ModuleNotFoundError: No module named 'pyarrow' at render time, not import time.
+pyarrow>=15
+pandas>=2
+numpy>=2

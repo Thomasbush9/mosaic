@@ -10,8 +10,27 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-SETUP = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup")
-REPO = SETUP / "mosaic"
+# The working directory is per-session and set by app.py on every rerun, so
+# switching projects switches the whole view (targets, MSAs, designs, configs).
+# REPO stays fixed — it is where the job scripts live, not where data goes.
+REPO = Path(__file__).resolve().parent.parent
+_WORKDIR = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup")
+
+
+def set_workdir(path) -> None:
+    global _WORKDIR
+    _WORKDIR = Path(path)
+
+
+def workdir() -> Path:
+    return _WORKDIR
+
+
+def sub(name: str) -> Path:
+    """A subdirectory of the working directory, created on demand."""
+    d = _WORKDIR / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 @dataclass
@@ -49,9 +68,9 @@ def msa_depth(path: Path) -> int:
 
 def list_targets() -> list[Target]:
     out = []
-    for fa in sorted((SETUP / "targets").glob("*.fasta")):
-        a3m = SETUP / "msa" / f"{fa.stem}.a3m"
-        cif = SETUP / "targets" / f"{fa.stem}.cif"
+    for fa in sorted(sub("targets").glob("*.fasta")):
+        a3m = sub("msa") / f"{fa.stem}.a3m"
+        cif = sub("targets") / f"{fa.stem}.cif"
         out.append(Target(
             name=fa.stem, fasta=fa, sequence=read_fasta(fa),
             msa=a3m if a3m.exists() else None,
@@ -74,7 +93,7 @@ def is_campaign_dir(d: Path) -> bool:
 
 
 def list_campaigns() -> list[str]:
-    root = SETUP / "designs"
+    root = sub("designs")
     if not root.exists():
         return []
     return sorted(p.name for p in root.glob("*") if p.is_dir() and is_campaign_dir(p))
@@ -83,7 +102,7 @@ def list_campaigns() -> list[str]:
 def load_designs(campaign: str) -> list[dict]:
     """Flatten a campaign into one row per design, best first."""
     rows = []
-    for p in sorted((SETUP / "designs" / campaign).glob("*.json")):
+    for p in sorted((sub("designs") / campaign).glob("*.json")):
         try:
             d = json.loads(p.read_text())
         except Exception:
@@ -106,12 +125,12 @@ def load_designs(campaign: str) -> list[dict]:
 
 def campaign_config(campaign: str) -> dict | None:
     """The resolved config a campaign ran with, if it recorded one."""
-    for p in sorted((SETUP / "designs" / campaign).glob("config_seed*.json")):
+    for p in sorted((sub("designs") / campaign).glob("config_seed*.json")):
         try:
             return json.loads(p.read_text())
         except Exception:
             continue
-    for p in sorted((SETUP / "designs" / campaign).glob("designs_seed*.json")):
+    for p in sorted((sub("designs") / campaign).glob("designs_seed*.json")):
         try:
             return json.loads(p.read_text()).get("config")
         except Exception:

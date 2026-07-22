@@ -34,6 +34,8 @@ STRUCTURE_MODELS: dict[str, dict[str, Any]] = {
         "params": {
             "recycling_steps": {"type": "int", "default": 1, "min": 1, "max": 10},
             "sampling_steps": {"type": "int", "default": 25, "min": 5, "max": 200},
+            "num_samples": {"type": "int", "default": 1, "min": 1, "max": 8},
+            "deterministic": {"type": "bool", "default": True},
         },
     },
     "boltz1": {
@@ -44,6 +46,8 @@ STRUCTURE_MODELS: dict[str, dict[str, Any]] = {
         "params": {
             "recycling_steps": {"type": "int", "default": 1, "min": 1, "max": 10},
             "sampling_steps": {"type": "int", "default": 25, "min": 5, "max": 200},
+            "num_samples": {"type": "int", "default": 1, "min": 1, "max": 8},
+            "deterministic": {"type": "bool", "default": True},
         },
     },
     "af2": {
@@ -164,6 +168,46 @@ LOSS_TERMS: dict[str, dict[str, Any]] = {
                   "blurb": "pTM-derived energy.", "params": {}},
 }
 
+# ProteinMPNN is inverse folding: given a backbone, how likely is this sequence?
+# It is a *structure-conditioned sequence* critic, so it needs a structure — it
+# reads the backbone the structure model just predicted, which is why it lives
+# with the structure losses rather than the sequence ones.
+MPNN_TERMS: dict[str, dict[str, Any]] = {
+    "InverseFoldingSequenceRecovery": {
+        "default_weight": 1.0,
+        "blurb": "Would ProteinMPNN redesign this backbone to this sequence? "
+                 "The standard de novo filter — sequences that fail it rarely "
+                 "express.",
+        "params": {
+            "temp": {"type": "float", "default": 0.1, "min": 0.01, "max": 2.0},
+            "num_samples": {"type": "int", "default": 16, "min": 1, "max": 64},
+            "jacobi_iterations": {"type": "int", "default": 10, "min": 1, "max": 50},
+        },
+    },
+    "ProteinMPNNLoss": {
+        "default_weight": 1.0,
+        "blurb": "Direct MPNN likelihood of the sequence given the backbone.",
+        "params": {
+            "num_samples": {"type": "int", "default": 8, "min": 1, "max": 64},
+            "stop_grad": {"type": "bool", "default": True},
+        },
+    },
+    "AllResiduePLLLoss": {
+        "default_weight": 1.0,
+        "blurb": "Per-residue pseudo-likelihood over the whole binder.",
+        "params": {
+            "chunk_size": {"type": "int", "default": 10, "min": 1, "max": 64,
+                           "help": "larger is faster and uses more memory"},
+        },
+    },
+}
+
+MPNN_WEIGHTS = {
+    "vanilla": "v_48_020.pt (general)",
+    "soluble": "soluble_v_48_020.pt (biased to soluble designs)",
+    "abmpnn": "abmpnn.pt (antibody-tuned)",
+}
+
 SEQUENCE_MODELS: dict[str, dict[str, Any]] = {
     "esmc": {
         "label": "ESM-C pseudo-likelihood",
@@ -188,6 +232,41 @@ SEQUENCE_MODELS: dict[str, dict[str, Any]] = {
         "label": "AbLang2 (paired)", "antibody_only": True,
         "blurb": "Antibody-specific, paired model.",
         "params": {"heavy_len": {"type": "optint", "default": None, "min": 0, "max": 400}},
+    },
+}
+
+# Generative models. These implement no binder_features/build_loss — there is no
+# question to differentiate — so they cannot appear in a campaign objective. They
+# run BEFORE it, proposing starting points.
+GENERATIVE_MODELS: dict[str, dict[str, Any]] = {
+    "boltzgen": {
+        "label": "BoltzGen",
+        "blurb": "Diffuses binder backbones against a target STRUCTURE, then "
+                 "reads residues off sidechain geometry. ~2.5 s per design "
+                 "after a one-off ~50 s conditioning pass.",
+        "needs_structure": True,
+        "params": {
+            "num_designs": {"type": "int", "default": 8, "min": 1, "max": 200},
+            "binder_length": {"type": "int", "default": 80, "min": 20, "max": 200},
+            "n_helices": {"type": "int", "default": 3, "min": 1, "max": 6,
+                          "help": "three-helix bundle is the standard de novo "
+                                  "mini-binder topology"},
+            "loop_length": {"type": "int", "default": 4, "min": 2, "max": 12},
+            "sampling_steps": {"type": "int", "default": 300, "min": 20, "max": 1000},
+            "step_scale": {"type": "float", "default": 2.0, "min": 0.5, "max": 5.0},
+            "noise_scale": {"type": "float", "default": 0.88, "min": 0.1, "max": 2.0},
+            "recycling_steps": {"type": "int", "default": 3, "min": 1, "max": 10},
+            "target_chain": {"type": "choice", "default": "A",
+                             "options": list("ABCDEFGH")},
+        },
+    },
+    "proteina": {
+        "label": "Proteina",
+        "blurb": "Flow-matching backbone generator. Staged and loads, but not "
+                 "yet wired into a workflow here.",
+        "needs_structure": False,
+        "enabled": False,
+        "params": {},
     },
 }
 
@@ -223,7 +302,12 @@ def default_config() -> dict[str, Any]:
             "sharp": {"n_steps": 25, "stepsize": 0.025, "momentum": 0.5,
                       "scale": 2.0, "logspace": False, "max_gradient_norm": None},
         },
+        "mpnn": {"weights": "soluble", "backbone_noise": 0.0, "terms": []},
         "run": {"batch": 2, "seed": 0},
+        "cluster": {"account": "kempner_bsabatini_lab",
+                    "partition": "kempner_h100", "n_tasks": 16,
+                    "throttle": 0, "time_limit": "08:00:00",
+                    "mem": "128G", "cpus": 8},
     }
 
 
@@ -237,8 +321,11 @@ def validate(cfg: dict[str, Any]) -> list[str]:
             errs.append(f"Unknown model {m['name']!r}.")
         if m["name"] == "af2" and m.get("params", {}).get("sampling_steps"):
             errs.append("AF2 does not accept sampling_steps (it asserts None).")
-    if not cfg.get("losses"):
+    if not cfg.get("losses") and not cfg.get("mpnn", {}).get("terms"):
         errs.append("No loss terms selected — there is nothing to optimize.")
+    for t in cfg.get("mpnn", {}).get("terms", []):
+        if t["name"] not in MPNN_TERMS:
+            errs.append(f"Unknown ProteinMPNN term {t['name']!r}.")
     for l in cfg.get("losses", []):
         if l["name"] not in LOSS_TERMS:
             errs.append(f"Unknown loss {l['name']!r}.")
@@ -260,8 +347,15 @@ def validate(cfg: dict[str, Any]) -> list[str]:
 
 
 def uses_confidence(cfg: dict[str, Any]) -> bool:
-    return any(LOSS_TERMS.get(l["name"], {}).get("confidence")
-               for l in cfg.get("losses", []))
+    """True if anything reads the structure/confidence modules.
+
+    ProteinMPNN counts: it scores a sequence against predicted backbone
+    coordinates, so it too prevents JAX from pruning the structure module.
+    """
+    if any(LOSS_TERMS.get(l["name"], {}).get("confidence")
+           for l in cfg.get("losses", [])):
+        return True
+    return bool(cfg.get("mpnn", {}).get("terms"))
 
 
 def estimate_seconds(cfg: dict[str, Any]) -> float:
@@ -305,8 +399,15 @@ def build_structure_model(name: str, params: dict[str, Any]):
     raise SystemExit(f"unknown structure model {name!r}")
 
 
-def build_inner_loss(losses: list[dict[str, Any]]):
-    """Weighted sum of loss terms, evaluated against one model's output."""
+def build_inner_loss(losses: list[dict[str, Any]], mpnn_cfg: dict | None = None):
+    """Weighted sum of loss terms, evaluated against one model's output.
+
+    ProteinMPNN terms belong here rather than with the sequence models: their
+    __call__ signature is (sequence, output, key), i.e. they score the sequence
+    *given the backbone the structure model just predicted*. That also means
+    they read the structure module, so like the confidence terms they defeat
+    JIT pruning and cost accordingly.
+    """
     import mosaic.losses.structure_prediction as sp
 
     total = None
@@ -315,6 +416,20 @@ def build_inner_loss(losses: list[dict[str, Any]]):
         params = {k: v for k, v in (spec.get("params") or {}).items() if v is not None}
         term = spec["weight"] * cls(**params)
         total = term if total is None else total + term
+
+    if mpnn_cfg and mpnn_cfg.get("terms"):
+        import mosaic.losses.protein_mpnn as pm
+        from mosaic.proteinmpnn.mpnn import load_abmpnn, load_mpnn, load_mpnn_sol
+
+        loader = {"vanilla": load_mpnn, "soluble": load_mpnn_sol,
+                  "abmpnn": load_abmpnn}[mpnn_cfg.get("weights", "soluble")]
+        mpnn = loader(backbone_noise=mpnn_cfg.get("backbone_noise", 0.0))
+        for spec in mpnn_cfg["terms"]:
+            cls = getattr(pm, spec["name"])
+            params = {k: v for k, v in (spec.get("params") or {}).items()
+                      if v is not None}
+            term = spec["weight"] * cls(mpnn, **params)
+            total = term if total is None else total + term
     return total
 
 

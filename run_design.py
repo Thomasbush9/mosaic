@@ -214,6 +214,10 @@ def main() -> int:
     print(f"structure backends: {', '.join(names)}")
     print("loss terms: " + ", ".join(
         f"{l['weight']}x{l['name']}" for l in cfg["losses"]))
+    _mp = cfg.get("mpnn", {}).get("terms", [])
+    if _mp:
+        print(f"proteinmpnn ({cfg['mpnn'].get('weights', 'soluble')}): " +
+              ", ".join(f"{t['weight']}x{t['name']}" for t in _mp))
     if dc.uses_confidence(cfg):
         print("  note: a confidence term is enabled — JAX can no longer prune the "
               "structure/confidence modules, so this run is substantially slower")
@@ -221,7 +225,7 @@ def main() -> int:
     # One inner objective, evaluated against each backend's output. Each model
     # contributes its own opinion of whether the sequence achieves the same
     # geometric ask; weights are per-model and set in the config.
-    inner = dc.build_inner_loss(cfg["losses"])
+    inner = dc.build_inner_loss(cfg["losses"], cfg.get("mpnn"))
 
     loss_term = None
     for spec in cfg["models"]:
@@ -247,6 +251,8 @@ def main() -> int:
         # multisample builders.
         if "sampling_steps" in params and name != "af2":
             kw["sampling_steps"] = params["sampling_steps"]
+        if name == "af2" and "use_dropout" in params:
+            kw["use_dropout"] = params["use_dropout"]
         if params.get("num_samples", 1) > 1 and hasattr(model, "build_multisample_loss"):
             kw["num_samples"] = params["num_samples"]
             term = model.build_multisample_loss(**kw)
