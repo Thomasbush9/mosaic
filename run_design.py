@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -66,6 +67,18 @@ def parse_args() -> argparse.Namespace:
                         "inside jax.lax.scan(length=recycling_steps), so 0 means "
                         "the body never executes and the loss has no dependence on "
                         "the sequence — a silently zero gradient.")
+    p.add_argument("--init-fasta", default=None,
+                   help="seed the optimizer from these sequences instead of "
+                        "random noise — e.g. generate_boltzgen.py output. "
+                        "BoltzGen cannot join the differentiable objective (it "
+                        "implements no build_loss), but it can propose starting "
+                        "points, which is what this consumes. One sequence per "
+                        "trajectory, cycled if fewer than --batch.")
+    p.add_argument("--init-noise", type=float, default=0.15,
+                   help="mixing weight toward uniform when seeding from "
+                        "--init-fasta. 0 gives a hard one-hot start, which has "
+                        "no gradient signal off the vertex; this keeps the "
+                        "iterate inside the simplex so it can still move.")
     p.add_argument("--out", required=True, help="output directory")
     p.add_argument("--no-cys", action=argparse.BooleanOptionalAction, default=True,
                    help="forbid cysteine in the binder (default on). NoCys is a "
@@ -222,14 +235,56 @@ def main() -> int:
         n_tokens = 19
         print("  no-cys: optimizing over 19 tokens (cysteine excluded by construction)")
 
+    from mosaic.common import TOKENS
+
     key = jax.random.key(args.seed)
     key, init_key = jax.random.split(key)
-    # Start near the uniform point of the simplex with a little noise, so the B
-    # trajectories diverge instead of collapsing to the same path.
-    x = jax.random.uniform(
-        init_key, (args.batch, args.binder_length, n_tokens), minval=0.0, maxval=1.0
-    )
-    x = x / x.sum(-1, keepdims=True)
+
+    if args.init_fasta:
+        # Seed from proposed sequences (e.g. BoltzGen backbones read out by
+        # CoordsToToken). The optimizer then refines a plausible starting point
+        # rather than searching from noise.
+        seqs = []
+        for ln in Path(args.init_fasta).read_text().splitlines():
+            ln = ln.strip()
+            if ln and not ln.startswith(">"):
+                seqs.append(ln.upper())
+        if not seqs:
+            raise SystemExit(f"no sequences in {args.init_fasta}")
+        # The optimizer's alphabet is 19 under --no-cys (C removed), so build the
+        # one-hot in that alphabet, not in TOKENS, or every residue from index 4
+        # onward lands on the wrong column.
+        alphabet = TOKENS.replace("C", "") if args.no_cys else TOKENS
+        rows = []
+        for b in range(args.batch):
+            # Offset by seed so array tasks refine DIFFERENT proposals rather
+            # than every task starting from the same first --batch sequences.
+            s = seqs[(args.seed * args.batch + b) % len(seqs)]
+            if len(s) != args.binder_length:
+                raise SystemExit(
+                    f"--init-fasta sequence {b} is {len(s)} aa, expected "
+                    f"{args.binder_length}")
+            idx = [alphabet.index(c) if c in alphabet else alphabet.index("A")
+                   for c in s]
+            rows.append(np.eye(n_tokens, dtype=np.float32)[idx])
+        seeded = jnp.asarray(np.stack(rows))
+        # Blend toward uniform: a hard vertex of the simplex has no room to move
+        # under a projected-gradient step.
+        w = args.init_noise
+        x = (1.0 - w) * seeded + w * (1.0 / n_tokens)
+        print(f"seeded {args.batch} trajectories from {len(seqs)} sequences in "
+              f"{args.init_fasta} (noise {w})")
+        if args.no_cys and any("C" in s for s in seqs):
+            print("  note: seed sequences contain C, which --no-cys forbids; "
+                  "those positions were mapped to A")
+    else:
+        # Start near the uniform point of the simplex with a little noise, so the
+        # B trajectories diverge instead of collapsing to the same path.
+        x = jax.random.uniform(
+            init_key, (args.batch, args.binder_length, n_tokens),
+            minval=0.0, maxval=1.0
+        )
+        x = x / x.sum(-1, keepdims=True)
 
     # Both stages return (final_iterate, best_iterate). Continue from the final
     # iterate — best_x is a snapshot, not a state the optimizer can resume from
@@ -260,7 +315,6 @@ def main() -> int:
     # re-evaluation below reports each design's actual loss regardless.
     x = best_x
 
-    from mosaic.common import TOKENS
     from mosaic.optimizers import batched_eval
 
     keys = jax.random.split(jax.random.key(args.seed + 1), args.batch)

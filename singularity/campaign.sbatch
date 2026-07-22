@@ -85,9 +85,24 @@ else
     echo "note: $TARGET_MSA missing — running single-sequence" >&2
 fi
 
+# INIT_FASTA seeds the optimizer from proposed sequences (generate_boltzgen.py)
+# instead of noise. Fail loudly if it is set but missing: silently falling back
+# to random initialization would make a seeded run indistinguishable from an
+# unseeded one in the results.
+INIT_ARG=()
+if [[ -n "${INIT_FASTA:-}" ]]; then
+    if [[ ! -f "$INIT_FASTA" ]]; then
+        echo "error: INIT_FASTA=$INIT_FASTA does not exist" >&2
+        exit 66
+    fi
+    INIT_ARG=(--init-fasta "$INIT_FASTA")
+    echo "seeding from $INIT_FASTA"
+fi
+
 "$HERE/mosaic-exec.sh" python "$MOSAIC_REPO/run_design.py" \
     --target "$TARGET_FASTA" \
     "${MSA_ARG[@]}" \
+    "${INIT_ARG[@]}" \
     --binder-length "$BINDER_LENGTH" \
     --models "$MODELS" \
     --batch "$BATCH" \
