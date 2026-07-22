@@ -19,7 +19,8 @@ import design_config as dc  # noqa: E402
 
 import cluster  # noqa: E402
 import store  # noqa: E402
-from ui_helpers import params_block  # noqa: E402
+import proposals as P  # noqa: E402
+from ui_helpers import params_block, parse_ranges, show_selection  # noqa: E402
 
 
 def _structure_section(tgt, account: str) -> None:
@@ -86,6 +87,20 @@ def render(cfg: dict) -> None:
         if needs:
             st.warning("Predict the target structure first (section 1).")
 
+        hot: list[int] = []
+        if meta.get("hotspots"):
+            htxt = st.text_input(
+                "Hotspots — target residues to engage", key=f"hot_{gname}",
+                placeholder="e.g. 95-110, 143",
+                help="1-based positions in the target. Proteina conditions on "
+                     "these, so the epitope is chosen rather than discovered.")
+            hot, herrs = parse_ranges(htxt, 1, tgt.length)
+            for e in herrs:
+                st.error(f"Hotspots: {e}")
+            show_selection(tgt.sequence, hot, "Hotspots")
+            if not hot:
+                st.caption("No hotspots — Proteina will choose where to bind.")
+
         out_dir = store.sub("designs") / f"{tgt.name}_{gname}"
         st.caption(f"Output: `{out_dir}`")
 
@@ -109,40 +124,76 @@ def render(cfg: dict) -> None:
                 st.code("".join(parts), language=None)
 
         if st.button(f"Run {meta['label']}", key=f"go_{gname}", disabled=needs):
-            ok, msg, jid = cluster.submit_script(
-                "singularity/boltzgen.sbatch",
-                {"TARGET_CIF": str(tgt.structure) if tgt.structure else "",
-                 "BINDER_LENGTH": str(params.get("binder_length", 80)),
-                 "NUM_DESIGNS": str(params.get("num_designs", 8)),
-                 "OUT_DIR": str(out_dir)},
-                account=account)
+            exports = {
+                "TARGET_CIF": str(tgt.structure) if tgt.structure else "",
+                "TARGET_FASTA": str(tgt.fasta),
+                "TARGET_NAME": tgt.name,
+                "BINDER_LENGTH": str(params.get("binder_length", 80)),
+                "NUM_DESIGNS": str(params.get("num_designs", 8)),
+                "TARGET_CHAIN": str(params.get("target_chain", "A")),
+                "OUT_DIR": str(out_dir),
+            }
+            if meta.get("hotspots"):
+                exports["HOTSPOTS"] = ",".join(str(h) for h in hot)
+            script = ("singularity/proteina.sbatch" if gname == "proteina"
+                      else "singularity/boltzgen.sbatch")
+            ok, msg, jid = cluster.submit_script(script, exports, account=account)
             (st.success if ok else st.error)(f"job {jid}" if ok else "submit failed")
             st.code(msg)
         st.divider()
 
     # ---------------------------------------------------------- proposals
-    st.subheader("3. Proposals")
-    fastas = sorted(store.sub("designs").glob("*/*_designs.fasta"))
-    if not fastas:
-        st.info("No generated proposals yet.")
+    st.subheader("3. Proposal sets")
+    st.caption(
+        "Each set carries its sequences, one complex per design, and the "
+        "epitope those complexes actually use — so refinement can aim at the "
+        "same interface instead of re-deriving a pose from scratch.")
+    sets = P.list_sets(store.sub("designs"))
+    if not sets:
+        st.info("No proposal sets yet. Generated sets appear here automatically.")
         return
-    pick = st.selectbox("Proposal set", [str(p) for p in fastas], key="gen_proposal")
-    p = Path(pick)
-    seqs = [ln.strip() for ln in p.read_text().splitlines()
-            if ln.strip() and not ln.startswith(">")]
-    st.caption(f"{len(seqs)} proposals, {len(seqs[0]) if seqs else 0} residues each")
+
+    names = [n for n, _ in sets]
+    pick = st.selectbox("Proposal set", names, index=len(names) - 1,
+                        key="gen_proposal")
+    ps = dict(sets)[pick]
+
+    m = st.columns(4)
+    m[0].metric("Generator", ps.generator)
+    m[1].metric("Designs", ps.n_designs)
+    m[2].metric("Binder length", ps.binder_length)
+    m[3].metric("Epitope residues", len(ps.epitope_idx))
+    for n in ps.notes:
+        st.caption(n)
+
+    if ps.epitope_idx:
+        tseq = next((t.sequence for t in targets if t.name == ps.target_name), "")
+        if tseq:
+            show_selection(tseq, [i + 1 for i in ps.epitope_idx], "Epitope")
+
     st.dataframe([{"#": i, "length": len(s), "sequence": s}
-                  for i, s in enumerate(seqs)], hide_index=True, width="stretch")
+                  for i, s in enumerate(ps.sequences)],
+                 hide_index=True, width="stretch")
 
-    meta_json = p.with_suffix("").with_suffix("").parent / "boltzgen_designs.json"
-    if meta_json.exists():
-        with st.expander("Generation settings"):
-            st.json(json.loads(meta_json.read_text()))
+    with st.expander("Generation settings"):
+        st.json(ps.params)
 
-    st.info(
-        f"To refine these, paste this path into **Launch → Binder → Seed from "
-        f"FASTA**:\n\n`{p}`\n\n"
-        "Honest caveat: with default optimizer settings the refinement keeps "
-        "only ~15% of the seed — it largely walks away and lands where it would "
-        "have from noise. Shorter soft stages, or anchoring most positions, are "
-        "the levers worth trying.")
+    # ------------------------------------------------ ship to refinement
+    st.divider()
+    st.subheader("4. Send to refinement")
+    st.caption(
+        "Carries the sequences AND the epitope into the Launch tab. Seeding on "
+        "sequence alone is what left refinement re-deriving a pose and keeping "
+        "only ~15% of the seed.")
+    if st.button("Use this set in Launch", type="primary", key="ship"):
+        st.session_state["pending_proposal"] = {
+            "name": pick,
+            "fasta": str(store.sub("designs") / pick / P.FASTA),
+            "epitope_idx": ps.epitope_idx,
+            "binder_length": ps.binder_length,
+            "target_name": ps.target_name,
+            "generator": ps.generator,
+        }
+        # Rerun immediately: Launch renders before Generate, so without this the
+        # prefill would only appear after some other interaction.
+        st.rerun()

@@ -70,9 +70,36 @@ def _msa_launcher(tgt, account: str) -> None:
         st.code(msg)
 
 
+def _consume_pending_proposal(cfg: dict) -> str | None:
+    """Apply a proposal set shipped from the Generate tab.
+
+    Applied once, then cleared, so later edits in this tab are not overwritten
+    on every rerun. Carries the epitope as well as the sequences — transferring
+    only the letters is what left refinement re-deriving a binding pose.
+    """
+    pend = st.session_state.pop("pending_proposal", None)
+    if not pend:
+        return None
+    cfg["binder"]["init_fasta"] = pend["fasta"]
+    cfg["binder"]["length"] = int(pend["binder_length"])
+    st.session_state["seed_fasta"] = pend["fasta"]
+    st.session_state["epitope"] = ",".join(
+        str(i + 1) for i in pend.get("epitope_idx", []))
+    st.session_state["_proposal_banner"] = pend
+    return pend["name"]
+
+
 def render(cfg: dict) -> dict:
     cfg.setdefault("cluster", dc.default_config()["cluster"])
     cfg.setdefault("mpnn", {"weights": "soluble", "backbone_noise": 0.0, "terms": []})
+    _consume_pending_proposal(cfg)
+
+    banner = st.session_state.get("_proposal_banner")
+    if banner:
+        st.success(
+            f"Seeded from **{banner['name']}** ({banner['generator']}): "
+            f"{len(banner.get('epitope_idx', []))} epitope residues and a "
+            f"{banner['binder_length']}-residue binder carried over.")
 
     # ------------------------------------------------------------- target
     st.subheader("1. Target")
@@ -109,8 +136,10 @@ def render(cfg: dict) -> dict:
              "tokens, so cysteine is impossible rather than discouraged.")
     init_noise = b[2].slider("Seed noise", 0.0, 0.5,
                              float(cfg["binder"].get("init_noise", 0.15)), 0.05)
+    if "seed_fasta" not in st.session_state:
+        st.session_state["seed_fasta"] = cfg["binder"].get("init_fasta") or ""
     seed_from = st.text_input(
-        "Seed from FASTA (optional)", value=cfg["binder"].get("init_fasta") or "",
+        "Seed from FASTA (optional)", key="seed_fasta",
         help="e.g. BoltzGen proposals from the Generate tab. Note: with default "
              "settings the optimizer keeps only ~15% of the seed.")
     cfg["binder"] = {"length": int(length), "no_cys": bool(no_cys),

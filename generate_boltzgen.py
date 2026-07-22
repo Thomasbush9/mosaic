@@ -63,8 +63,17 @@ def main() -> int:
     ap.add_argument("--step-scale", type=float, default=2.0)
     ap.add_argument("--noise-scale", type=float, default=0.88)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--target-fasta", default=None)
+    ap.add_argument("--target-name", default=None)
+    ap.add_argument("--contact-cutoff", type=float, default=8.0,
+                   help="heavy-atom distance defining an interface contact when "
+                        "deriving the epitope from the generated poses")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import proposals as P
 
     from mosaic.common import TOKENS
     from mosaic.models.boltzgen import (
@@ -140,22 +149,36 @@ def main() -> int:
 
         st = writer(coords)
         st.setup_entities()
-        st.make_mmcif_document().write_file(str(out / f"boltzgen_{i:03d}.cif"))
+        st.make_mmcif_document().write_file(str(out / f"design_{i:03d}.cif"))
 
-    fasta = out / "boltzgen_designs.fasta"
-    with fasta.open("w") as f:
-        for r in records:
-            f.write(f">boltzgen_{r['design']:03d}\n{r['sequence']}\n")
-    (out / "boltzgen_designs.json").write_text(json.dumps(
-        {"target_cif": str(target_cif), "binder_length": a.binder_length,
-         "secondary_structure": ss, "sampling_steps": a.sampling_steps,
-         "seed": a.seed, "designs": records}, indent=2))
+    # BoltzGen is not hotspot-conditioned: it chooses where to bind. Recovering
+    # that choice is what lets the refinement stage aim at the same interface
+    # instead of re-deriving a pose from a generic contact term.
+    cifs = sorted(out.glob("design_*.cif"))
+    epitope, notes = P.consensus_epitope(cifs, binder_length=a.binder_length,
+                                         cutoff=a.contact_cutoff)
 
-    # Composition sanity: the coords->token map infers residues from sidechain
-    # atom placement, so a degenerate sample shows up as a near-constant string.
+    ps = P.ProposalSet(
+        name=out.name, generator="boltzgen",
+        target_name=a.target_name or target_cif.stem,
+        target_fasta=a.target_fasta or "", target_structure=str(target_cif),
+        binder_length=a.binder_length, n_designs=a.num_designs,
+        sequences=[r["sequence"] for r in records], epitope_idx=epitope,
+        params={"secondary_structure": ss, "sampling_steps": a.sampling_steps,
+                "step_scale": a.step_scale, "noise_scale": a.noise_scale,
+                "recycling_steps": a.recycling_steps, "seed": a.seed,
+                "target_chain": a.target_chain,
+                "contact_cutoff": a.contact_cutoff},
+        notes=notes,
+    )
+    P.write(out, ps)
+
     allseq = "".join(r["sequence"] for r in records)
     uniq = len(set(allseq))
-    print(f"\n{len(records)} designs -> {fasta}")
+    print(f"\nwrote proposal set -> {out}")
+    print(f"epitope derived from poses: {len(epitope)} target residues")
+    for n in notes:
+        print(f"  {n}")
     print(f"distinct residue types across all designs: {uniq}/20")
     if uniq < 8:
         print("WARNING: very low residue diversity — check the coords->token "

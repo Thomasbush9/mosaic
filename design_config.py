@@ -262,11 +262,18 @@ GENERATIVE_MODELS: dict[str, dict[str, Any]] = {
     },
     "proteina": {
         "label": "Proteina",
-        "blurb": "Flow-matching backbone generator. Staged and loads, but not "
-                 "yet wired into a workflow here.",
-        "needs_structure": False,
-        "enabled": False,
-        "params": {},
+        "blurb": "Flow-matching backbone generator. Unlike BoltzGen it is "
+                 "HOTSPOT-CONDITIONED — you say which target residues to engage "
+                 "and it designs to them, rather than choosing for itself. "
+                 "Emits CA-only backbones.",
+        "needs_structure": True,
+        "hotspots": True,
+        "params": {
+            "num_designs": {"type": "int", "default": 8, "min": 1, "max": 200},
+            "binder_length": {"type": "int", "default": 80, "min": 20, "max": 200},
+            "target_chain": {"type": "choice", "default": "A",
+                             "options": list("ABCDEFGH")},
+        },
     },
 }
 

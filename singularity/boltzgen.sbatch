@@ -27,4 +27,7 @@ REPO="${MOSAIC_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
   --target-cif "${TARGET_CIF:-$SETUP/targets/dio3_ecd.cif}" \
   --binder-length "${BINDER_LENGTH:-80}" \
   --num-designs "${NUM_DESIGNS:-8}" \
+  --target-fasta "${TARGET_FASTA:-}" \
+  --target-name "${TARGET_NAME:-}" \
+  --contact-cutoff "${CONTACT_CUTOFF:-8.0}" \
   --out "${OUT_DIR:-$SETUP/designs/boltzgen}"
