@@ -1,0 +1,11 @@
+# mosaic design webapp (host-side, runs on a login node).
+#
+# The app never imports mosaic and never runs a model — it reads files and
+# queues SLURM jobs — so it needs only a plain Python 3.11+ environment:
+#
+#   module load python/3.13.12-fasrc01
+#   uv venv webapp/.venv && uv pip install --python webapp/.venv -r webapp/requirements.txt
+#
+# See docs/WEBAPP.md.
+streamlit>=1.40
+plotly>=5.0

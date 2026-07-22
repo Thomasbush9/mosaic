@@ -18,3 +18,5 @@ logs/
 # dependencies are git-sourced, so without a lock every container build
 # re-resolves them at HEAD and images are not reproducible.
 # See singularity/mosaic.def.
+# webapp virtualenv (created on first run by webapp/connect.sh)
+webapp/.venv/

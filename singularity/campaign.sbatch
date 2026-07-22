@@ -99,16 +99,34 @@ if [[ -n "${INIT_FASTA:-}" ]]; then
     echo "seeding from $INIT_FASTA"
 fi
 
-"$HERE/mosaic-exec.sh" python "$MOSAIC_REPO/run_design.py" \
-    --target "$TARGET_FASTA" \
-    "${MSA_ARG[@]}" \
-    "${INIT_ARG[@]}" \
-    --binder-length "$BINDER_LENGTH" \
-    --models "$MODELS" \
-    --batch "$BATCH" \
-    --seed "$TASK_ID" \
-    --soft-steps "$SOFT_STEPS" \
-    --sharp-steps "$SHARP_STEPS" \
-    --out "$OUT_DIR"
+# DESIGN_CONFIG is the webapp's path: a JSON file carrying models, per-model and
+# per-loss parameters, and both optimizer stages. It travels as a FILE PATH
+# rather than as exported variables because --export splits on commas, so any
+# value containing one is silently truncated — the failure that once turned a
+# boltz2-vs-boltz2+af2 comparison into boltz2-vs-boltz2.
+if [[ -n "${DESIGN_CONFIG:-}" ]]; then
+    if [[ ! -f "$DESIGN_CONFIG" ]]; then
+        echo "error: DESIGN_CONFIG=$DESIGN_CONFIG does not exist" >&2
+        exit 66
+    fi
+    echo "config: $DESIGN_CONFIG"
+    "$HERE/mosaic-exec.sh" python "$MOSAIC_REPO/run_design.py" \
+        --config "$DESIGN_CONFIG" \
+        --target "$TARGET_FASTA" \
+        --seed "$TASK_ID" \
+        --out "$OUT_DIR"
+else
+    "$HERE/mosaic-exec.sh" python "$MOSAIC_REPO/run_design.py" \
+        --target "$TARGET_FASTA" \
+        "${MSA_ARG[@]}" \
+        "${INIT_ARG[@]}" \
+        --binder-length "$BINDER_LENGTH" \
+        --models "$MODELS" \
+        --batch "$BATCH" \
+        --seed "$TASK_ID" \
+        --soft-steps "$SOFT_STEPS" \
+        --sharp-steps "$SHARP_STEPS" \
+        --out "$OUT_DIR"
+fi
 
 echo "task $TASK_ID done"
