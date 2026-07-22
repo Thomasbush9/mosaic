@@ -90,6 +90,24 @@ bind_cache hf        .cache/huggingface
 # conversion is done once by fetch-weights.sbatch and bound read-only here.
 bind_cache openfold3 .openfold3
 
+# AbLang/AbLang2 are the awkward case: they cache inside their own package
+# directory rather than under HOME, so these bind onto site-packages paths that
+# mosaic.def pre-creates (they cannot be created here — the image is read-only).
+# Done this way, ablang.pretrained("heavy") finds amodel.pt and never attempts
+# the download that would fail on the read-only filesystem.
+SITE=/opt/mosaic/.venv/lib/python3.12/site-packages
+bind_pkg_weights() {
+    local src="$MOSAIC_WEIGHTS/$1" dest="$2"
+    if [[ -d "$src" ]]; then
+        binds+=(-B "$src:$dest:ro")
+    else
+        echo "note: $src not present — skipping bind for $dest" >&2
+    fi
+}
+bind_pkg_weights ablang/heavy  "$SITE/ablang/model-weights-heavy"
+bind_pkg_weights ablang/light  "$SITE/ablang/model-weights-light"
+bind_pkg_weights ablang2/paired "$SITE/ablang2/model-weights-ablang2-paired"
+
 # jproteina_complexa.hub hardcodes ~/.cache/jproteina_complexa as a default
 # argument too (hub.py:8), so it needs the same treatment.
 bind_cache jproteina .cache/jproteina_complexa

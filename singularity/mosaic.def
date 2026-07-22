@@ -97,20 +97,77 @@ From: ubuntu:24.04
     uv sync --frozen --group jax-cuda --python /usr/bin/python3.12
 
     # ── dm-haiku vs JAX 0.11 ─────────────────────────────────────────────────
-    # dm-haiku 0.0.16 (the newest release, no fix upstream) binds
-    # jax.core.DropVar at import time, which JAX removed in 0.11.0, so
-    # `import haiku` raises and the AF2 backend cannot even be imported.
-    # jaxpr_info.py already imports jax.extend.core as jax_core and carries a
-    # TODO to use it; this applies that single line. jax.core.Atom on the line
-    # above still resolves and jax.extend.core has no Atom, so only DropVar
-    # moves. Pinning jax<0.11 instead would drag every other backend back.
+    # dm-haiku 0.0.16 is the newest release and reads 15 names that JAX removed
+    # in 0.11. It declares jax>=0.8.1 with no upper bound, so uv happily resolves
+    # a combination that cannot work: `import haiku` raises on jax.core.DropVar,
+    # and once past that the forward pass dies on
+    # jax.core.get_opaque_trace_state. AF2 is unusable without a fix, and only
+    # the vendored AF2 code imports haiku, so the blast radius is AF2 alone.
     #
-    # Only the vendored AF2 code imports haiku, so the blast radius is AF2.
-    HAIKU_JI=/opt/mosaic/.venv/lib/python3.12/site-packages/haiku/_src/jaxpr_info.py
-    sed -i 's/^DropVar: TypeAlias = jax\.core\.DropVar$/DropVar: TypeAlias = jax_core.DropVar/' "$HAIKU_JI"
-    # Fail the build rather than ship an image where AF2 silently cannot import.
-    grep -q '^DropVar: TypeAlias = jax_core\.DropVar$' "$HAIKU_JI"
-    /opt/mosaic/.venv/bin/python -c "import haiku; print('haiku import ok', haiku.__version__)"
+    # 13 of the 15 moved to jax.extend.core unchanged; restoring those onto
+    # jax.core is enough for AF2 to run forward AND backward (verified). The
+    # remaining two — cur_sublevel, thread_local_state — have no replacement and
+    # are deliberately not faked; if AF2 ever reaches them it should fail loudly
+    # rather than silently do something wrong.
+    #
+    # This is prepended to haiku/__init__.py rather than installed as a
+    # sitecustomize so it runs only when haiku is imported — no jax import cost
+    # or global monkeypatching for every other python process in the container.
+    # Pinning jax<0.11 instead would drag every other backend back a version.
+    HAIKU_INIT=/opt/mosaic/.venv/lib/python3.12/site-packages/haiku/__init__.py
+    /opt/mosaic/.venv/bin/python - "$HAIKU_INIT" <<'PYEOF'
+import sys
+path = sys.argv[1]
+MARK = "MOSAIC JAX 0.11 COMPAT SHIM"
+src = open(path).read()
+if MARK not in src:
+    shim = f'''# {MARK} — see singularity/mosaic.def for the rationale.
+import jax.core as _mosaic_jax_core
+from jax.extend import core as _mosaic_jax_extend_core
+for _mosaic_name in (
+    "ClosedJaxpr", "DropVar", "Jaxpr", "JaxprEqn", "Literal", "Primitive",
+    "TraceTag", "Var", "get_opaque_trace_state", "jaxpr_as_fun", "primitives",
+    "set_current_trace", "take_current_trace",
+):
+    if not hasattr(_mosaic_jax_core, _mosaic_name) and hasattr(
+        _mosaic_jax_extend_core, _mosaic_name
+    ):
+        setattr(
+            _mosaic_jax_core,
+            _mosaic_name,
+            getattr(_mosaic_jax_extend_core, _mosaic_name),
+        )
+del _mosaic_name, _mosaic_jax_core, _mosaic_jax_extend_core
+
+'''
+    open(path, "w").write(shim + src)
+    print("haiku shim installed")
+else:
+    print("haiku shim already present")
+PYEOF
+    # Fail the build rather than ship an image where AF2 cannot import or run.
+    /opt/mosaic/.venv/bin/python -c "
+import haiku, jax.core
+print('haiku import ok', haiku.__version__)
+assert hasattr(jax.core, 'get_opaque_trace_state'), 'haiku shim did not take'
+print('shim verified: jax.core.get_opaque_trace_state restored')
+"
+
+    # ── AbLang / AbLang2 mount points ────────────────────────────────────────
+    # Both packages cache weights INSIDE their own installed package directory
+    # (ablang/pretrained.py:27, ablang2/load_model.py:46) and call os.makedirs on
+    # it — which is read-only here, so they fail on first use no matter what is
+    # downloaded. Neither has an env var or cache_dir argument.
+    #
+    # Creating the directories now makes them bindable at run time:
+    # os.makedirs(exist_ok=True) is a no-op on a directory that already exists,
+    # and both packages then find their weight files and skip the download
+    # entirely. mosaic-exec.sh binds the populated copies over these.
+    for d in /opt/mosaic/.venv/lib/python3.12/site-packages/ablang/model-weights-heavy \
+             /opt/mosaic/.venv/lib/python3.12/site-packages/ablang/model-weights-light \
+             /opt/mosaic/.venv/lib/python3.12/site-packages/ablang2/model-weights-ablang2-paired; do
+        mkdir -p "$d"
+    done
 
     # ── runtime mount points ─────────────────────────────────────────────────
     # Only two absolute paths are needed. The weight caches are NOT mounted at

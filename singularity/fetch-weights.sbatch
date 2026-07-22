@@ -61,6 +61,47 @@ echo "dest:  $W"
 df -h "$W" | tail -1
 echo
 
+# AbLang / AbLang2 are plain tarballs from OPIG and Zenodo — no container or
+# python needed. They are handled here rather than through the packages' own
+# downloaders because those write into their read-only site-packages directory
+# (see mosaic.def). The layout produced here is what mosaic-exec.sh binds over
+# the pre-created mount points.
+fetch_tarball() {
+    local url="$1" dest="$2"; shift 2
+    local expect=("$@")
+    if [[ -f "$dest/${expect[0]}" ]]; then
+        echo "$dest already populated — skipping"
+        return 0
+    fi
+    local tmp; tmp="$(mktemp -d)"
+    echo "downloading $url"
+    curl -fsSL --retry 3 -o "$tmp/w.tar.gz" "$url"
+    tar -xzf "$tmp/w.tar.gz" -C "$tmp"
+    # The archives are not consistently flat, so locate the real payload rather
+    # than assuming a layout.
+    local found; found="$(dirname "$(find "$tmp" -name "${expect[0]}" -print -quit)")"
+    [[ -n "$found" && -d "$found" ]] || { echo "error: ${expect[0]} not in archive" >&2; rm -rf "$tmp"; return 1; }
+    mkdir -p "$dest"; cp -f "$found"/* "$dest"/
+    rm -rf "$tmp"
+    for f in "${expect[@]}"; do
+        [[ -f "$dest/$f" ]] || { echo "error: missing $f in $dest" >&2; return 1; }
+    done
+    ls -lh "$dest"
+}
+
+case "$MODEL" in
+  ablang)
+    fetch_tarball https://opig.stats.ox.ac.uk/data/downloads/ablang-heavy.tar.gz \
+        "$W/ablang/heavy" amodel.pt hparams.json vocab.json
+    fetch_tarball https://opig.stats.ox.ac.uk/data/downloads/ablang-light.tar.gz \
+        "$W/ablang/light" amodel.pt hparams.json vocab.json
+    echo "FETCH OK: ablang"; exit 0 ;;
+  ablang2)
+    fetch_tarball https://zenodo.org/records/10185169/files/ablang2-weights.tar.gz \
+        "$W/ablang2/paired" model.pt hparams.json
+    echo "FETCH OK: ablang2"; exit 0 ;;
+esac
+
 # of3 reuses the .pt checkpoints already in the shared cache via OPENFOLD_CACHE,
 # whose ckpt_root indirection file already points there — so only the
 # torch->equinox conversion runs, not a multi-GB S3 download.

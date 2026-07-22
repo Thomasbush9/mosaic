@@ -82,6 +82,47 @@ import mosaic.losses.structure_prediction as sp
 TARGET = "MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQ"
 BINDER_LEN = 16
 
+# AbLang / AbLang2 are sequence models: LossTerms taking a soft sequence
+# directly, with no structure features. They still get the full forward+gradient
+# treatment, just without binder_features. Loading them at all is the real test
+# — both cache inside their own read-only site-packages directory, so this only
+# works because mosaic.def pre-creates the mount points and mosaic-exec.sh binds
+# populated weights over them.
+if model_name in ("ablang", "ablang2"):
+    # A real VH sequence; these are antibody-specific models and would be
+    # meaningless on a generic protein.
+    VH = ("EVQLVESGGGLVQPGGSLRLSCAASGFTFSSYAMSWVRQAPGKGLEWVSAISGSGGSTYYADSVKG"
+          "RFTISRDNSKNTLYLQMNSLRAEDTAVYYCAKDLGYYFDYWGQGTLVTVSS")
+    idx = np.array([TOKENS.index(c) for c in VH])
+    soft = jnp.asarray(np.eye(len(TOKENS), dtype=np.float32)[idx])
+    key = jax.random.key(0)
+
+    t0 = time.time()
+    if model_name == "ablang":
+        from mosaic.losses.ablang import AbLangPseudoLikelihood, load_ablang
+        m, tok = load_ablang("heavy")
+        term = AbLangPseudoLikelihood(m, tok)
+    else:
+        from mosaic.losses.ablang2 import Ablang2PseudoLikelihood, load_ablang2
+        m, tok = load_ablang2()
+        # heavy_len == len(seq) means heavy-only, per the class docstring.
+        term = Ablang2PseudoLikelihood(m, tok, len(VH), None)
+    print(f"loaded in {time.time()-t0:.1f}s")
+
+    from mosaic.optimizers import _eval_loss_and_grad
+    t0 = time.time()
+    (value, aux), grad = _eval_loss_and_grad(term, soft, key)
+    value = float(value); grad = np.asarray(grad)
+    print(f"loss+grad (incl. JIT trace): {time.time()-t0:.1f}s")
+    print("loss:", value)
+    print("grad shape:", grad.shape, "finite:", bool(np.isfinite(grad).all()),
+          "absmax:", float(np.abs(grad).max()))
+    assert np.isfinite(value), "non-finite loss"
+    assert np.isfinite(grad).all(), "gradient contains NaN/Inf"
+    assert np.abs(grad).max() > 0, "gradient is identically zero"
+    print(f"{model_name.upper()} FORWARD+GRAD OK")
+    raise SystemExit(0)
+
 # Proteina and BoltzGen are not StructurePredictionModel implementations — they
 # are generative and have no binder_features/build_loss — so they get a load
 # check rather than the forward+gradient path below.
