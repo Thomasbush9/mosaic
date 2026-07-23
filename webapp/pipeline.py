@@ -177,7 +177,8 @@ def mermaid(p: Pipeline, states: dict[str, str] | None = None) -> str:
         spec = NODE_TYPES.get(n.type, {})
         label = n.label or n.id
         sub = _node_caption(n)
-        text = f"{label}<br/><small>{sub}</small>" if sub else label
+        # Mermaid renders <br/> but not <small>; keep the caption plain.
+        text = f"{label}<br/>{sub}" if sub else label
         lines.append(f'    {n.id}["{text}"]')
     for n in p.nodes:
         for src in n.inputs:
