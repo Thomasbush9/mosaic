@@ -35,6 +35,7 @@ import docs_tab  # noqa: E402
 import generate_tab  # noqa: E402
 import launch_tab  # noqa: E402
 import monitor_tab  # noqa: E402
+import pipeline_tab  # noqa: E402
 import results_tab  # noqa: E402
 import session as sess  # noqa: E402
 import store  # noqa: E402
@@ -122,14 +123,17 @@ with st.sidebar:
 # and Launch consumes what it produces. Note Launch still RENDERS first below —
 # tab order is presentation, but a proposal shipped from Generate must be
 # applied before Launch draws its widgets, or the prefill lands a rerun late.
-generate, launch, monitor, results, docs = st.tabs(
-    ["Generate", "Launch", "Monitor", "Results", "Docs"])
+generate, launch, pipe, monitor, results, docs = st.tabs(
+    ["Generate", "Launch", "Pipeline", "Monitor", "Results", "Docs"])
 
 with launch:
     st.session_state[key] = launch_tab.render(st.session_state[key])
 
 with generate:
     generate_tab.render(st.session_state[key])
+
+with pipe:
+    pipeline_tab.render(st.session_state[key])
 
 with monitor:
     monitor_tab.render()
