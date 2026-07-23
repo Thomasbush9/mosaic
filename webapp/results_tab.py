@@ -63,6 +63,12 @@ def _per_seed_fig(rows: list[dict]):
 
 
 def render() -> None:
+    mode = st.radio("Show", ["Optimized campaigns", "Screened proposals"],
+                    horizontal=True, key="res_kind")
+    if mode == "Screened proposals":
+        _render_screens()
+        return
+
     campaigns = store.list_campaigns()
     if not campaigns:
         st.info("No finished campaigns yet.")
@@ -168,3 +174,39 @@ def render() -> None:
         "PAE; rerun the winner through a model that was not in the objective; "
         "then the wet lab."
     )
+
+
+def _render_screens() -> None:
+    screens = store.list_screens()
+    if not screens:
+        st.info("No screened proposal sets yet. Run **Generate -> Screen & rank**.")
+        return
+    pick = st.selectbox("Screen", screens, index=len(screens) - 1,
+                        key="res_screen")
+    data = store.load_screen(pick)
+    if not data or not data.get("results"):
+        st.warning("No results in this screen.")
+        return
+    rows = data["results"]
+    st.caption(f"Refolded with **{data['screen_model']}** from "
+               f"**{data['generator']}** proposals. Ranked by "
+               f"`{data['score_formula']}`.")
+    m = st.columns(4)
+    m[0].metric("Candidates", len(rows))
+    m[1].metric("Best ipTM", f"{max(r['iptm'] for r in rows):.3f}")
+    m[2].metric("Best pLDDT", f"{max(r['binder_plddt'] for r in rows):.1f}")
+    m[3].metric("Best iface PAE", f"{min(r['interface_pae'] for r in rows):.2f}")
+    st.dataframe(
+        [{"rank": i + 1, "design": r["design"], "ipTM": r["iptm"],
+          "pLDDT": r["binder_plddt"], "iface PAE": r["interface_pae"],
+          "score": r["score"], "sequence": r["sequence"]}
+         for i, r in enumerate(rows)],
+        hide_index=True, width="stretch")
+    st.download_button(
+        "Download FASTA (ranked)", key="dl_screen",
+        data="".join(f">{pick}_{r['design']:03d}_iptm{r['iptm']:.3f}\n"
+                     f"{r['sequence']}\n" for r in rows),
+        file_name=f"{pick}_ranked.fasta", mime="text/plain")
+    st.caption("ipTM/pLDDT are the folding model's confidence, not an affinity. "
+               "Screen with a model other than the generator, and validate the "
+               "top few before trusting them.")

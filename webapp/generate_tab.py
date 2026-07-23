@@ -204,22 +204,64 @@ def render(cfg: dict) -> None:
     with st.expander("Generation settings"):
         st.json(ps.params)
 
-    # ------------------------------------------------ ship to refinement
+    # ---------------------------------------------- two routes forward
     st.divider()
-    st.subheader("4. Send to refinement")
+    st.subheader("4. What next")
     st.caption(
-        "Carries the sequences AND the epitope into the Launch tab. Seeding on "
-        "sequence alone is what left refinement re-deriving a pose and keeping "
-        "only ~15% of the seed.")
-    if st.button("Use this set in Launch", type="primary", key="ship"):
-        st.session_state["pending_proposal"] = {
-            "name": pick,
-            "fasta": str(store.sub("designs") / pick / P.FASTA),
-            "epitope_idx": ps.epitope_idx,
-            "binder_length": ps.binder_length,
-            "target_name": ps.target_name,
-            "generator": ps.generator,
-        }
-        # Rerun immediately: Launch renders before Generate, so without this the
-        # prefill would only appear after some other interaction.
-        st.rerun()
+        "Two ways to combine these candidates with the structure models, both "
+        "legitimate. Screening matches mosaic's own generate->refold->rank "
+        "pipeline; optimizing gradient-refines the sequences under a full "
+        "multi-objective loss.")
+
+    tab_screen, tab_optimize = st.tabs(["Screen & rank", "Optimize (refine)"])
+
+    with tab_screen:
+        st.markdown(
+            "Refold each candidate with a chosen model and rank by confidence. "
+            "Nothing is optimized — the generator picked the sequence, and the "
+            "question is which ones fold into a confident complex.")
+        sc = st.columns(3)
+        screen_model = sc[0].selectbox(
+            "Refold with", ["boltz2", "boltz1", "af2", "of3", "protenix"],
+            index=2 if ps.generator == "boltzgen" else 0,
+            help="Best chosen DIFFERENT from the generator, so a candidate is "
+                 "not judged by the model that made it. AF2 is the default when "
+                 "screening BoltzGen output.")
+        screen_rec = sc[1].number_input("recycling_steps", 1, 20, 4, 1,
+                                        key="screen_rec")
+        use_msa_s = sc[2].checkbox("Use target MSA", value=True, key="screen_msa")
+        if st.button("Screen this set", type="primary", key="do_screen"):
+            tgt = next((t for t in targets if t.name == ps.target_name), None)
+            exports = {
+                "PROPOSALS": str(store.sub("designs") / pick),
+                "MODEL": screen_model,
+                "RECYCLING_STEPS": str(int(screen_rec)),
+                "OUT_DIR": str(store.sub("designs") / f"{pick}_screen_{screen_model}"),
+            }
+            if use_msa_s and tgt and tgt.msa:
+                exports["TARGET_MSA"] = str(tgt.msa)
+            ok, msg, jid = cluster.submit_script("singularity/screen.sbatch",
+                                                 exports, account=account)
+            (st.success if ok else st.error)(f"job {jid}" if ok else "submit failed")
+            st.code(msg)
+
+    with tab_optimize:
+        st.markdown(
+            "Carry the sequences AND the epitope into the Launch tab and "
+            "gradient-refine under a full loss — e.g. AF2 + ProteinMPNN + ESM-C. "
+            "This is a real use of the optimizer: with a strong multi-objective "
+            "loss the sequence is improved against several critics at once, so "
+            "it will diverge from the seed, and that is the point.")
+        if st.button("Use this set in Launch", type="primary", key="ship"):
+            st.session_state["pending_proposal"] = {
+                "name": pick,
+                "fasta": str(store.sub("designs") / pick / P.FASTA),
+                "epitope_idx": ps.epitope_idx,
+                "binder_length": ps.binder_length,
+                "target_name": ps.target_name,
+                "generator": ps.generator,
+            }
+            st.success(f"Loaded '{pick}'. Open **Launch** — the seed FASTA, "
+                       "epitope and binder length are filled in. Pick your "
+                       "models and losses there (AF2 + ProteinMPNN + ESM-C is a "
+                       "good refinement objective).")

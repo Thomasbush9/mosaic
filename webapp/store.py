@@ -138,6 +138,25 @@ def campaign_config(campaign: str) -> dict | None:
     return None
 
 
+def list_screens() -> list[str]:
+    """Directories containing screen.json (refold-and-rank results)."""
+    root = sub("designs")
+    if not root.exists():
+        return []
+    return sorted(p.name for p in root.glob("*")
+                  if p.is_dir() and (p / "screen.json").exists())
+
+
+def load_screen(name: str) -> dict | None:
+    f = sub("designs") / name / "screen.json"
+    if not f.is_file():
+        return None
+    try:
+        return json.loads(f.read_text())
+    except Exception:
+        return None
+
+
 # Natural amino-acid frequencies (SwissProt averages, %), for composition
 # comparison. Reference only — de novo designs legitimately differ.
 NATURAL_AA = {
