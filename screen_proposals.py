@@ -71,6 +71,10 @@ def main() -> int:
                     help="by default cysteine is biased out of the redesign, as "
                          "in mosaic's pipeline — free cysteines are a liability")
     ap.add_argument("--write-cif", action="store_true", default=True)
+    ap.add_argument("--shard", type=int, default=0,
+                    help="this shard's index (for splitting a big pool across "
+                         "an array); processes candidates [shard::num_shards]")
+    ap.add_argument("--num-shards", type=int, default=1)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
@@ -154,8 +158,13 @@ def main() -> int:
                 float(plddt[:ps.binder_length].mean()),
                 float(pae[:ps.binder_length, ps.binder_length:].mean()))
 
+    indexed = list(enumerate(ps.sequences))
+    if a.num_shards > 1:
+        indexed = indexed[a.shard::a.num_shards]
+        print(f"shard {a.shard}/{a.num_shards}: {len(indexed)} candidates")
+
     results = []
-    for i, seq in enumerate(ps.sequences):
+    for i, seq in indexed:
         if len(seq) != ps.binder_length:
             print(f"[{i}] skipped — length {len(seq)} != {ps.binder_length}")
             continue
@@ -217,7 +226,9 @@ def main() -> int:
         "score_formula": "iptm + binder_plddt/100 - interface_pae/30",
         "results": results,
     }
-    (out / "screen.json").write_text(json.dumps(payload, indent=2))
+    shard_name = ("screen.json" if a.num_shards == 1
+                  else f"screen_shard_{a.shard}.json")
+    (out / shard_name).write_text(json.dumps(payload, indent=2))
     with (out / "screened.fasta").open("w") as f:
         for r in results:
             f.write(f">{ps.name}_{r['design']:03d}_iptm{r['iptm']:.3f}\n"

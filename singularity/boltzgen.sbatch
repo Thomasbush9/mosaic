@@ -23,10 +23,25 @@ export MOSAIC_SIF="${MOSAIC_SIF:-$SETUP/images/mosaic.sif}"
 export MOSAIC_WEIGHTS="${MOSAIC_WEIGHTS:-$SETUP/weights}"
 export MOSAIC_SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$USER/mosaic}"
 REPO="${MOSAIC_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
+
+# Array-aware: each task generates PER_TASK designs with its own seed into a
+# shard directory, to be merged afterwards. Single-job runs (no array) behave
+# as before.
+TASK="${SLURM_ARRAY_TASK_ID:-}"
+if [[ -n "$TASK" ]]; then
+    SEED="$TASK"
+    OUT_DIR="${OUT_DIR:?set OUT_DIR}/part_${TASK}"
+    NUM_DESIGNS="${PER_TASK:-${NUM_DESIGNS:-8}}"
+else
+    SEED="${SEED:-0}"
+fi
 "$REPO/singularity/mosaic-exec.sh" python "$REPO/generate_boltzgen.py" \
   --target-cif "${TARGET_CIF:-$SETUP/targets/dio3_ecd.cif}" \
   --binder-length "${BINDER_LENGTH:-80}" \
   --num-designs "${NUM_DESIGNS:-8}" \
+  --seed "${SEED:-0}" \
+  --hotspots "${HOTSPOTS:-}" \
+  --hotspot-shell "${HOTSPOT_SHELL:-6.0}" \
   --target-fasta "${TARGET_FASTA:-}" \
   --target-name "${TARGET_NAME:-}" \
   --contact-cutoff "${CONTACT_CUTOFF:-8.0}" \

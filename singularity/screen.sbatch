@@ -29,4 +29,6 @@ MSA_ARG=(); [[ -n "${TARGET_MSA:-}" && -f "${TARGET_MSA:-}" ]] && MSA_ARG=(--tar
   --recycling-steps "${RECYCLING_STEPS:-4}" \
   $([ "${INVERSE_FOLD:-1}" = "0" ] && echo --no-inverse-fold || echo --inverse-fold) \
   --mpnn-weights "${MPNN_WEIGHTS:-soluble}" \
+  --shard "${SLURM_ARRAY_TASK_ID:-0}" \
+  --num-shards "${NUM_SHARDS:-1}" \
   --out "${OUT_DIR:?set OUT_DIR}"

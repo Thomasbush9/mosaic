@@ -56,6 +56,7 @@ class ProposalSet:
 
 
 def write(out_dir: Path, ps: ProposalSet) -> Path:
+    out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / MANIFEST).write_text(ps.to_json())
     with (out_dir / FASTA).open("w") as f:
@@ -239,3 +240,40 @@ def pocket_residues(cif_path, hotspots1: list[int], shell: float,
             if done:
                 break
     return sorted(keep)
+
+
+def merge_sets(part_dirs: list[Path], out_dir: Path, name: str) -> "ProposalSet":
+    """Combine sharded proposal parts (part_0, part_1, ...) into one set.
+
+    Sequences and CIFs are concatenated and renumbered; the epitope is the union
+    of the parts (each part already consensus-filtered within its own shard).
+    """
+    import shutil
+
+    parts = [read(d) for d in part_dirs]
+    parts = [p for p in parts if p is not None]
+    if not parts:
+        raise SystemExit("no readable parts to merge")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seqs: list[str] = []
+    epi: set[int] = set()
+    k = 0
+    for pdir, ps in zip(part_dirs, parts):
+        for cif in sorted(Path(pdir).glob("design_*.cif")):
+            shutil.copy(cif, out_dir / f"design_{k:03d}.cif")
+            k += 1
+        seqs.extend(ps.sequences)
+        epi.update(ps.epitope_idx)
+
+    base = parts[0]
+    merged = ProposalSet(
+        name=name, generator=base.generator, target_name=base.target_name,
+        target_fasta=base.target_fasta, target_structure=base.target_structure,
+        binder_length=base.binder_length, n_designs=len(seqs),
+        sequences=seqs, epitope_idx=sorted(epi),
+        params={**base.params, "merged_from": [str(d) for d in part_dirs]},
+        notes=[f"merged from {len(parts)} shards, {len(seqs)} designs total"],
+    )
+    write(out_dir, merged)
+    return merged
