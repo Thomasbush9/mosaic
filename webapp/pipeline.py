@@ -220,7 +220,9 @@ def _out_dir(root: Path, p: Pipeline, n: Node) -> Path:
 
 
 def submit(p: Pipeline, *, repo: Path, workdir: Path, account: str,
-           gpu_partition: str, cpu_partition: str) -> tuple[bool, str, dict[str, str]]:
+           gpu_partition: str, cpu_partition: str,
+           gpu_res: dict | None = None,
+           cpu_res: dict | None = None) -> tuple[bool, str, dict[str, str]]:
     """Submit the whole DAG. Returns (ok, log, {node_id: job_id}).
 
     Each node runs pipeline_node.py, which assembles its inputs from the upstream
@@ -253,11 +255,15 @@ def submit(p: Pipeline, *, repo: Path, workdir: Path, account: str,
         cmd = ["sbatch", "--parsable",
                f"--job-name=pipe-{p.name}-{n.id}",
                f"--account={account}", f"--partition={part}"]
+        # Resources per node type — overridable from the UI, with sane defaults.
+        r = (gpu_res or {"cpus": 8, "mem": "96G", "time_limit": "06:00:00"}) \
+            if spec["gpu"] else \
+            (cpu_res or {"cpus": 2, "mem": "16G", "time_limit": "01:00:00"})
         if spec["gpu"]:
-            cmd += ["--gres=gpu:1", "--cpus-per-task=8", "--mem=96G",
-                    "--time=06:00:00"]
-        else:
-            cmd += ["--cpus-per-task=2", "--mem=16G", "--time=01:00:00"]
+            cmd.append("--gres=gpu:1")
+        cmd += [f"--cpus-per-task={r.get('cpus', 8 if spec['gpu'] else 2)}",
+                f"--mem={r.get('mem', '96G' if spec['gpu'] else '16G')}",
+                f"--time={r.get('time_limit', '06:00:00' if spec['gpu'] else '01:00:00')}"]
         if dep:
             cmd.append(dep)
         cmd += [f"--output={out}/job-%j.out",

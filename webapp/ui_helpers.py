@@ -113,3 +113,42 @@ def params_block(prefix: str, params_spec: dict, current: dict,
             out[pname] = widget(f"{prefix}_{pname}", pname, params_spec[pname],
                                 current.get(pname, params_spec[pname].get("default")))
     return out
+
+
+def resource_picker(prefix: str, *, gpu: bool = True, defaults: dict | None = None):
+    """A compact cluster-resource menu: account, partition, time, memory, CPUs.
+
+    Overrides the sbatch script's baked-in #SBATCH defaults. Returned dict is
+    shaped for cluster.submit_script (time_limit / mem / cpus / gres / account /
+    partition). Only accounts the user can actually submit under are listed.
+    """
+    import cluster
+    d = defaults or {}
+    accts = cluster.accounts()
+    parts = cluster.partitions()
+    with st.expander("Cluster resources", expanded=False):
+        c = st.columns(2)
+        account = c[0].selectbox(
+            "Account", accts,
+            index=accts.index(d["account"]) if d.get("account") in accts else 0,
+            key=f"{prefix}_acct",
+            help="Only accounts you can submit under are listed — an association "
+                 "with MaxSubmit=0 rejects everything at submit time.")
+        part_opts = parts if gpu else ["kempner_interactive"] + parts
+        partition = c[1].selectbox(
+            "Partition", part_opts,
+            index=part_opts.index(d["partition"]) if d.get("partition") in part_opts else 0,
+            key=f"{prefix}_part")
+        c2 = st.columns(3)
+        time_limit = c2[0].text_input("Time (H:MM:SS)",
+                                      d.get("time_limit", "02:00:00" if gpu else "01:00:00"),
+                                      key=f"{prefix}_time")
+        mem = c2[1].text_input("Memory", d.get("mem", "96G" if gpu else "16G"),
+                               key=f"{prefix}_mem")
+        cpus = c2[2].number_input("CPUs", 1, 64, int(d.get("cpus", 8 if gpu else 2)),
+                                  key=f"{prefix}_cpus")
+    res = {"account": account, "partition": partition,
+           "time_limit": time_limit, "mem": mem, "cpus": int(cpus)}
+    if gpu:
+        res["gres"] = "gpu:1"
+    return res

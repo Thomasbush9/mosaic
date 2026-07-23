@@ -71,12 +71,27 @@ def submit_campaign(config_path: Path, out_dir: Path, n_tasks: int,
 
 def submit_script(script: str, exports: dict[str, str],
                   account: str = DEFAULT_ACCOUNT,
-                  partition: str | None = None) -> tuple[bool, str, str | None]:
-    """Queue one of the helper jobs (MSA search, structure prediction, BoltzGen)."""
+                  partition: str | None = None,
+                  time_limit: str | None = None, mem: str | None = None,
+                  cpus: int | None = None, gres: str | None = None
+                  ) -> tuple[bool, str, str | None]:
+    """Queue a helper job (MSA search, structure prediction, generate, screen).
+
+    Resource flags passed here OVERRIDE the #SBATCH defaults baked into the
+    script, so the UI can size a job without editing the sbatch file.
+    """
     ex = ",".join(["ALL"] + [f"{k}={v}" for k, v in exports.items()])
     cmd = ["sbatch", "--parsable", f"--account={account}"]
     if partition:
         cmd.append(f"--partition={partition}")
+    if time_limit:
+        cmd.append(f"--time={time_limit}")
+    if mem:
+        cmd.append(f"--mem={mem}")
+    if cpus:
+        cmd.append(f"--cpus-per-task={cpus}")
+    if gres:
+        cmd.append(f"--gres={gres}")
     cmd += [f"--export={ex}", script]
     p = _run(cmd, cwd=REPO)
     ok = p.returncode == 0

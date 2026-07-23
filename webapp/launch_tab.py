@@ -56,7 +56,7 @@ def _new_target_form() -> None:
                 st.rerun()
 
 
-def _msa_launcher(tgt, account: str) -> None:
+def _msa_launcher(tgt, res: dict) -> None:
     st.warning(
         "No MSA for this target. Predictions are markedly weaker without one, "
         "and Boltz/OpenFold3/Protenix will otherwise query the public ColabFold "
@@ -66,7 +66,7 @@ def _msa_launcher(tgt, account: str) -> None:
             "singularity/msa-search.sbatch",
             {"TARGET_FASTA": str(tgt.fasta), "TARGET_NAME": tgt.name,
              "MSA_OUT": str(store.sub("msa"))},
-            account=account)
+            **res)
         (st.success if ok else st.error)(f"job {jid}" if ok else "submit failed")
         st.code(msg)
 
@@ -121,7 +121,8 @@ def render(cfg: dict) -> dict:
     c[2].metric("Structure", "yes" if tgt.structure else "no")
     use_msa = c[3].checkbox("Use MSA", value=bool(tgt.msa), disabled=tgt.msa is None)
     if tgt.msa is None:
-        _msa_launcher(tgt, cfg["cluster"]["account"])
+        _msa_launcher(tgt, {"account": cfg["cluster"]["account"],
+                            "partition": cfg["cluster"]["partition"]})
     cfg["target"] = {"fasta": str(tgt.fasta),
                      "msa": str(tgt.msa) if tgt.msa else None,
                      "use_msa": bool(use_msa and tgt.msa)}

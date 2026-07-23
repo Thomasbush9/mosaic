@@ -21,10 +21,10 @@ import cluster  # noqa: E402
 import store  # noqa: E402
 import proposals as P  # noqa: E402
 import viewer  # noqa: E402
-from ui_helpers import params_block, parse_ranges, show_selection  # noqa: E402
+from ui_helpers import params_block, parse_ranges, resource_picker, show_selection  # noqa: E402
 
 
-def _structure_section(tgt, account: str) -> None:
+def _structure_section(tgt, res: dict) -> None:
     st.subheader("1. Target structure")
     st.caption(
         "BoltzGen designs against **geometry**, not sequence, so it needs a CIF. "
@@ -48,7 +48,7 @@ def _structure_section(tgt, account: str) -> None:
             {"TARGET_FASTA": str(tgt.fasta),
              "TARGET_MSA": str(tgt.msa) if tgt.msa else "",
              "OUT_CIF": str(store.sub("targets") / f"{tgt.name}.cif")},
-            account=account)
+            **res)
         (st.success if ok else st.error)(f"job {jid}" if ok else "submit failed")
         st.code(msg)
     if tgt.msa is None:
@@ -67,8 +67,11 @@ def render(cfg: dict) -> None:
     idx = next((i for i, t in enumerate(targets) if str(t.fasta) == str(cur)), 0)
     tgt = next(t for t in targets if t.name == st.selectbox("Target", names, index=idx, key="gen_target"))
     account = cfg.get("cluster", {}).get("account", cluster.DEFAULT_ACCOUNT)
+    res = resource_picker("gen_res", gpu=True,
+                          defaults={"account": account,
+                                    "partition": cfg.get("cluster", {}).get("partition", "kempner_h100")})
 
-    _structure_section(tgt, account)
+    _structure_section(tgt, res)
     st.divider()
 
     st.subheader("2. Generate binder backbones")
@@ -162,7 +165,7 @@ def render(cfg: dict) -> None:
                     exports["HOTSPOT_SHELL"] = str(params["hotspot_shell"])
             script = ("singularity/proteina.sbatch" if gname == "proteina"
                       else "singularity/boltzgen.sbatch")
-            ok, msg, jid = cluster.submit_script(script, exports, account=account)
+            ok, msg, jid = cluster.submit_script(script, exports, **res)
             (st.success if ok else st.error)(f"job {jid}" if ok else "submit failed")
             st.code(msg)
         st.divider()
@@ -251,7 +254,7 @@ def render(cfg: dict) -> None:
             if use_msa_s and tgt and tgt.msa:
                 exports["TARGET_MSA"] = str(tgt.msa)
             ok, msg, jid = cluster.submit_script("singularity/screen.sbatch",
-                                                 exports, account=account)
+                                                 exports, **res)
             (st.success if ok else st.error)(f"job {jid}" if ok else "submit failed")
             st.code(msg)
 

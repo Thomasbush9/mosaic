@@ -22,7 +22,7 @@ import design_config as dc  # noqa: E402
 import cluster  # noqa: E402
 import pipeline as PL  # noqa: E402
 import store  # noqa: E402
-from ui_helpers import params_block  # noqa: E402
+from ui_helpers import params_block, resource_picker  # noqa: E402
 
 
 def _pipe() -> PL.Pipeline:
@@ -192,13 +192,16 @@ def render(cfg: dict) -> None:
                            file_name=f"{p.name}.json", mime="application/json")
         st.json(json.loads(p.to_json()))
 
-    sc = st.columns(2)
-    account = sc[0].selectbox("Account", cluster.accounts(), key="pipe_acct")
-    partition = sc[1].selectbox("GPU partition", cluster.partitions(), key="pipe_part")
+    st.markdown("**GPU nodes** (generate / screen / optimize)")
+    gpu_res = resource_picker("pipe_gpu", gpu=True)
+    st.markdown("**CPU nodes** (merge)")
+    cpu_res = resource_picker("pipe_cpu", gpu=False)
     if st.button("Submit pipeline", type="primary", disabled=bool(problems)):
         ok, log, jobids = PL.submit(
-            p, repo=store.REPO, workdir=store.workdir(), account=account,
-            gpu_partition=partition, cpu_partition="kempner_interactive")
+            p, repo=store.REPO, workdir=store.workdir(),
+            account=gpu_res["account"], gpu_partition=gpu_res["partition"],
+            cpu_partition=cpu_res["partition"],
+            gpu_res=gpu_res, cpu_res=cpu_res)
         if ok:
             st.session_state[f"pipe_jobids_{p.name}"] = jobids
             st.success("Submitted — SLURM runs each node when its inputs are ready.")
