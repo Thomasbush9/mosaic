@@ -53,6 +53,23 @@ def main() -> int:
                          "fold, and the examples use 4-20 for validation vs 1 "
                          "while optimizing")
     ap.add_argument("--sampling-steps", type=int, default=50)
+    ap.add_argument("--inverse-fold", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="ProteinMPNN redesigns the binder sequence on the folded "
+                         "backbone before scoring — mosaic's own generative "
+                         "pipeline (boltzgen_pipeline.py). The generator proposes "
+                         "a fold; MPNN proposes the sequence best suited to it. "
+                         "On by default; --no-inverse-fold scores the raw "
+                         "generated sequences instead.")
+    ap.add_argument("--mpnn-weights", default="soluble",
+                    choices=["vanilla", "soluble", "abmpnn"],
+                    help="soluble is the usual choice for de novo binders")
+    ap.add_argument("--mpnn-temp", type=float, default=0.1)
+    ap.add_argument("--mpnn-iterations", type=int, default=10,
+                    help="Jacobi iterations of the inverse-folding fixed point")
+    ap.add_argument("--allow-cys", action="store_true", default=False,
+                    help="by default cysteine is biased out of the redesign, as "
+                         "in mosaic's pipeline — free cysteines are a liability")
     ap.add_argument("--write-cif", action="store_true", default=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -66,6 +83,8 @@ def main() -> int:
     import jax.numpy as jnp
     from mosaic.common import TOKENS
     from mosaic.structure_prediction import TargetChain
+    from mosaic.losses.protein_mpnn import inverse_fold
+    from mosaic.proteinmpnn.mpnn import load_abmpnn, load_mpnn, load_mpnn_sol
 
     ps = P.read(Path(a.proposals))
     if ps is None:
@@ -100,6 +119,20 @@ def main() -> int:
     features, writer = model.binder_features(ps.binder_length, [chain])
     print("binder features built")
 
+    mpnn = None
+    mpnn_bias = None
+    if a.inverse_fold:
+        loader = {"vanilla": load_mpnn, "soluble": load_mpnn_sol,
+                  "abmpnn": load_abmpnn}[a.mpnn_weights]
+        mpnn = loader()
+        if not a.allow_cys:
+            # Same trick mosaic uses: -1e6 on the cysteine column of the
+            # inverse-folding logits (boltzgen_pipeline.py:180).
+            mpnn_bias = jnp.zeros((ps.binder_length, 20)).at[
+                :, TOKENS.index("C")].set(-1e6)
+        print(f"ProteinMPNN ({a.mpnn_weights}) loaded for inverse folding"
+              + ("" if a.allow_cys else ", cysteine biased out"))
+
     predict_kw = {"features": features, "writer": writer,
                   "recycling_steps": a.recycling_steps}
     if a.model != "af2":
@@ -109,30 +142,59 @@ def main() -> int:
         idx = [TOKENS.index(c) for c in seq]
         return jnp.asarray(np.eye(20, dtype=np.float32)[idx])
 
+    def fold(seq: str, key):
+        return model.predict(PSSM=one_hot(seq), key=key, **predict_kw)
+
+    def metrics(pred):
+        plddt = np.asarray(pred.plddt)
+        if plddt.max() <= 1.0:            # mosaic reports pLDDT on 0-1
+            plddt = plddt * 100.0
+        pae = np.asarray(pred.pae)
+        return (float(np.asarray(pred.iptm)),
+                float(plddt[:ps.binder_length].mean()),
+                float(pae[:ps.binder_length, ps.binder_length:].mean()))
+
     results = []
     for i, seq in enumerate(ps.sequences):
         if len(seq) != ps.binder_length:
             print(f"[{i}] skipped — length {len(seq)} != {ps.binder_length}")
             continue
         t0 = time.time()
-        pred = model.predict(PSSM=one_hot(seq), key=jax.random.key(i), **predict_kw)
+        key = jax.random.key(i)
 
-        plddt = np.asarray(pred.plddt)
-        if plddt.max() <= 1.0:            # mosaic reports pLDDT on 0-1
-            plddt = plddt * 100.0
-        binder_plddt = float(plddt[:ps.binder_length].mean())
-        iptm = float(np.asarray(pred.iptm))
-        pae = np.asarray(pred.pae)
-        # Interface PAE: binder rows vs target columns. Lower is better.
-        iface_pae = float(pae[:ps.binder_length, ps.binder_length:].mean())
+        # Fold the proposed sequence to get a backbone.
+        pred0 = fold(seq, key)
+        orig = metrics(pred0)
 
-        rec = {"design": i, "sequence": seq, "iptm": round(iptm, 4),
-               "binder_plddt": round(binder_plddt, 2),
+        final_seq = seq
+        redesigned = None
+        if mpnn is not None:
+            # Inverse-fold the binder on that backbone. mosaic inverse-folds
+            # from the generator's raw diffusion backbone; refolding first is
+            # the model-agnostic equivalent that also works for Proteina, whose
+            # saved output is CA-only.
+            key, k2 = jax.random.split(key)
+            idx = inverse_fold(mpnn, ps.binder_length, pred0.model_output,
+                               temp=a.mpnn_temp, key=k2,
+                               jacobi_iterations=a.mpnn_iterations, bias=mpnn_bias)
+            final_seq = "".join(TOKENS[j] for j in np.asarray(idx))
+            redesigned = final_seq
+            pred = fold(final_seq, k2)
+        else:
+            pred = pred0
+
+        iptm, binder_plddt, iface_pae = metrics(pred)
+        rec = {"design": i, "sequence": final_seq,
+               "original_sequence": seq if redesigned else None,
+               "redesigned": redesigned is not None,
+               "iptm": round(iptm, 4), "binder_plddt": round(binder_plddt, 2),
                "interface_pae": round(iface_pae, 3),
+               "iptm_before_mpnn": round(orig[0], 4) if redesigned else None,
                "seconds": round(time.time() - t0, 1)}
         results.append(rec)
+        lift = f"  (ipTM {orig[0]:.3f}->{iptm:.3f})" if redesigned else ""
         print(f"[{i}] iptm {iptm:.3f}  plddt {binder_plddt:5.1f}  "
-              f"ifacePAE {iface_pae:5.2f}  {seq}")
+              f"ifacePAE {iface_pae:5.2f}{lift}  {final_seq}")
 
         if a.write_cif:
             pred.st.setup_entities()
@@ -150,6 +212,8 @@ def main() -> int:
         "proposal_set": ps.name, "generator": ps.generator,
         "screen_model": a.model, "target_msa": msa_path,
         "recycling_steps": a.recycling_steps,
+        "inverse_fold": a.inverse_fold,
+        "mpnn_weights": a.mpnn_weights if a.inverse_fold else None,
         "score_formula": "iptm + binder_plddt/100 - interface_pae/30",
         "results": results,
     }

@@ -230,6 +230,14 @@ def render(cfg: dict) -> None:
         screen_rec = sc[1].number_input("recycling_steps", 1, 20, 4, 1,
                                         key="screen_rec")
         use_msa_s = sc[2].checkbox("Use target MSA", value=True, key="screen_msa")
+        sc2 = st.columns(3)
+        inv = sc2[0].checkbox(
+            "ProteinMPNN inverse-fold", value=True, key="screen_inv",
+            help="Redesign the binder sequence on the folded backbone before "
+                 "scoring — mosaic's own pipeline. The generator proposes a "
+                 "fold; MPNN proposes the sequence best suited to it.")
+        mpnn_w = sc2[1].selectbox("MPNN weights", ["soluble", "vanilla", "abmpnn"],
+                                  index=0, key="screen_mpnn_w", disabled=not inv)
         if st.button("Screen this set", type="primary", key="do_screen"):
             tgt = next((t for t in targets if t.name == ps.target_name), None)
             exports = {
@@ -237,6 +245,8 @@ def render(cfg: dict) -> None:
                 "MODEL": screen_model,
                 "RECYCLING_STEPS": str(int(screen_rec)),
                 "OUT_DIR": str(store.sub("designs") / f"{pick}_screen_{screen_model}"),
+                "INVERSE_FOLD": "1" if inv else "0",
+                "MPNN_WEIGHTS": mpnn_w,
             }
             if use_msa_s and tgt and tgt.msa:
                 exports["TARGET_MSA"] = str(tgt.msa)
