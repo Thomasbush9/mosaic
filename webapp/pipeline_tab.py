@@ -206,6 +206,34 @@ def render(cfg: dict) -> None:
             st.session_state["_show_load"] = False
             st.rerun()
 
+    # Inspect a pipeline that was already submitted — reconstructed from its
+    # on-disk shards, so you can review or reopen a past run without having kept
+    # its JSON.
+    runs = PL.list_runs(store.workdir())
+    if runs:
+        with st.expander(f"Inspect a past pipeline ({len(runs)} on disk)"):
+            pick = st.selectbox("Run", runs, index=len(runs) - 1, key="past_run")
+            run_dir = store.workdir() / "pipelines" / pick
+            past = PL.Pipeline.from_run_dir(run_dir)
+            jobids = {}
+            jf = run_dir / "jobids.json"
+            if jf.exists():
+                try:
+                    jobids = json.loads(jf.read_text())
+                except Exception:
+                    jobids = {}
+            states = {}
+            if jobids and st.checkbox("Query SLURM job states", key="past_states"):
+                states = PL.states(jobids)
+            st.markdown(f"```mermaid\n{PL.mermaid(past, states)}\n```")
+            b = st.columns(2)
+            if b[0].button("Load into editor", key="load_past"):
+                st.session_state["pipeline"] = past
+                st.rerun()
+            b[1].download_button("Download DAG JSON", data=past.to_json(),
+                                 file_name=f"{pick}.json", mime="application/json",
+                                 key="dl_past")
+
     # ---- add a node --------------------------------------------------------
     with st.expander("Add a node", expanded=not p.nodes):
         a = st.columns([1, 1, 2])

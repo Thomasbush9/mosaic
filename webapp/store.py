@@ -54,16 +54,30 @@ def _by_file(fn):
     return wrap
 
 
-def _glob_sig(root: Path, pattern: str):
-    """A signature of a directory's matching files, for cache invalidation.
+def _glob_sig(root: Path, pattern: str = "*"):
+    """A cheap cache signature for a directory scan: the directory's own mtime.
 
-    Changes when a file is added, removed, or rewritten — so a cached scan is
-    reused across reruns but a Refresh after a job finishes recomputes.
+    A directory's mtime changes when an entry is added or removed — exactly when
+    a cached scan of write-once job outputs goes stale (a new designs_seed shard
+    lands, so a Refresh after a job step recomputes). It does NOT change when a
+    file is rewritten in place, but these outputs are written once, so that case
+    does not arise. This is O(1) rather than stat-ing every file on every rerun,
+    which is what made a many-file campaign dir expensive.
     """
-    out = []
-    for p in sorted(root.glob(pattern)):
-        out.append((p.name, _sig(p)))
-    return tuple(out)
+    return _sig(root)
+
+
+def _listing_sig():
+    """Signature of the two campaign roots and their immediate children, so the
+    campaign/screen listings are recomputed only when a directory appears or
+    disappears — not on every widget interaction."""
+    parts = []
+    for root in (sub("designs"), _WORKDIR / "pipelines"):
+        parts.append((str(root), _sig(root)))
+        if root.exists():
+            for d in sorted(root.glob("*")):
+                parts.append((d.name, _sig(d)))
+    return tuple(parts)
 
 
 def set_workdir(path) -> None:
@@ -175,6 +189,9 @@ def _has_design_json(d: Path) -> bool:
 
 
 def list_campaigns() -> list[str]:
+    key = ("list_campaigns", _listing_sig())
+    if key in _CACHE:
+        return _CACHE[key]
     out: list[str] = []
     root = sub("designs")
     if root.exists():
@@ -186,7 +203,9 @@ def list_campaigns() -> list[str]:
         for node in proot.glob("*/*"):
             if node.is_dir() and _has_design_json(node):
                 out.append(f"pipelines/{node.parent.name}/{node.name}")
-    return sorted(out)
+    out = sorted(out)
+    _CACHE[key] = out
+    return out
 
 
 def load_designs(campaign: str) -> list[dict]:
@@ -238,6 +257,9 @@ def campaign_config(campaign: str) -> dict | None:
 
 def list_screens() -> list[str]:
     """Directories containing screen.json (refold-and-rank results)."""
+    key = ("list_screens", _listing_sig())
+    if key in _CACHE:
+        return _CACHE[key]
     out: list[str] = []
     root = sub("designs")
     if root.exists():
@@ -248,7 +270,9 @@ def list_screens() -> list[str]:
         for node in proot.glob("*/*"):
             if (node / "screen.json").is_file():
                 out.append(f"pipelines/{node.parent.name}/{node.name}")
-    return sorted(out)
+    out = sorted(out)
+    _CACHE[key] = out
+    return out
 
 
 def load_screen(name: str) -> dict | None:

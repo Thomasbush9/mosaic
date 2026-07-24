@@ -109,6 +109,36 @@ class Pipeline:
         return Pipeline(name=d["name"],
                         nodes=[Node(**n) for n in d.get("nodes", [])])
 
+    @staticmethod
+    def from_run_dir(run_dir) -> "Pipeline":
+        """Reconstruct a submitted pipeline from its on-disk node.json shards.
+
+        submit() writes each node's {type, params, inputs=[upstream dirs]}, and
+        the upstream dir basenames are the node ids — so the whole DAG is
+        recoverable even for a run made before dag.json was saved. This is what
+        lets you inspect a past pipeline you never downloaded the JSON for.
+        """
+        run_dir = Path(run_dir)
+        nodes = []
+        for nj in sorted(run_dir.glob("*/node.json")):
+            try:
+                d = json.loads(nj.read_text())
+            except Exception:
+                continue
+            nodes.append(Node(id=nj.parent.name, type=d.get("type", ""),
+                              params=d.get("params", {}),
+                              inputs=[Path(p).name for p in d.get("inputs", [])]))
+        return Pipeline(name=run_dir.name, nodes=nodes)
+
+
+def list_runs(workdir) -> list[str]:
+    """Names of submitted pipelines on disk (dirs with node.json shards)."""
+    proot = Path(workdir) / "pipelines"
+    if not proot.exists():
+        return []
+    return sorted(p.name for p in proot.glob("*")
+                  if p.is_dir() and next(iter(p.glob("*/node.json")), None))
+
 
 # --------------------------------------------------------------------------
 # Validation and ordering
@@ -311,8 +341,10 @@ def submit(p: Pipeline, *, repo: Path, workdir: Path, account: str,
         jobids[n.id] = r.stdout.strip().split(";")[0]
         log.append(f"{n.id} ({n.type}) -> job {jobids[n.id]}"
                    + (f"  after {','.join(up_ids)}" if up_ids else ""))
-    (_out_dir(workdir, p, order[0]).parent / "jobids.json").write_text(
-        json.dumps(jobids, indent=2))
+    run_root = _out_dir(workdir, p, order[0]).parent
+    (run_root / "jobids.json").write_text(json.dumps(jobids, indent=2))
+    # Save the whole DAG so it can be reopened later without the node.json shards.
+    (run_root / "dag.json").write_text(p.to_json())
     return True, "\n".join(log), jobids
 
 

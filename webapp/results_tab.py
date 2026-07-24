@@ -52,8 +52,11 @@ def _composition_fig(comp: dict[str, float]):
 def _per_seed_fig(rows: list[dict]):
     import altair as alt
     import pandas as pd
+    # Cap the point count: a very large campaign would otherwise ship tens of
+    # thousands of marks to the browser. rows are best-first, so this keeps the
+    # designs that matter.
     df = pd.DataFrame([{"seed": r["seed"], "loss": r["loss"]}
-                      for r in rows if r["seed"] is not None])
+                      for r in rows[:2000] if r["seed"] is not None])
     return alt.Chart(df).mark_circle(
         size=110, color=C_DESIGN, opacity=1, stroke="white", strokeWidth=1.5,
     ).encode(
@@ -153,6 +156,8 @@ def render() -> None:
     except ImportError:
         st.info("Charts need `altair` (ships with Streamlit) — the tables "
                 "above work without it.")
+    except Exception as e:  # a bad campaign must not take down the whole tab
+        st.warning(f"Could not draw the statistics for this campaign: {e}")
 
     ids = store.pairwise_identity([r["sequence"] for r in shown])
     if ids:
