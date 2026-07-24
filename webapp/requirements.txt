@@ -7,10 +7,12 @@
 #   uv venv webapp/.venv && uv pip install --python webapp/.venv -r webapp/requirements.txt
 #
 # See docs/WEBAPP.md.
+# Charts use Altair, which Streamlit already bundles (Vega-Lite) — no plotly.
+# plotly's wheel is ~45 MB and its full bundle is pushed to the browser on every
+# chart; on a login node the app must stay light.
 streamlit>=1.40
-plotly>=5.0
 
-# st.dataframe serialises through Arrow; without these it raises
+# st.dataframe and Altair serialise through Arrow; without these it raises
 # ModuleNotFoundError: No module named 'pyarrow' at render time, not import time.
 pyarrow>=15
 pandas>=2

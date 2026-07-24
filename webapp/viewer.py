@@ -66,11 +66,27 @@ def show(html: str, height: int = 480) -> None:
     _embed(html, height + 20)
 
 
+# Building the view inlines the whole 3Dmol.js bundle into an HTML string, which
+# is not free. Streamlit reruns the caller on every widget change, so the result
+# is memoized on (file mtime, hotspots, options): while the viewer is open,
+# fiddling with an unrelated widget elsewhere no longer rebuilds the blob.
+_HTML_CACHE: dict = {}
+
+
 def target_view(cif_path: Path, hotspots1: list[int] | None = None,
                 chain: str = "A", height: int = 480,
                 clickable: bool = True) -> str:
     """Target cartoon, hotspot residues highlighted as sticks."""
-    data = Path(cif_path).read_text()
+    cif_path = Path(cif_path)
+    try:
+        mtime = cif_path.stat().st_mtime_ns
+    except OSError:
+        mtime = None
+    key = (str(cif_path), mtime, tuple(hotspots1 or ()), height, clickable)
+    if key in _HTML_CACHE:
+        return _HTML_CACHE[key]
+
+    data = cif_path.read_text()
     styles = [({}, {"cartoon": {"color": C_TARGET, "opacity": 0.9}})]
     if hotspots1:
         # py3Dmol selects by author residue number; our positions are 1-based
@@ -78,7 +94,9 @@ def target_view(cif_path: Path, hotspots1: list[int] | None = None,
         styles.append(({"resi": [str(i) for i in hotspots1]},
                        {"cartoon": {"color": C_HOTSPOT},
                         "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}}))
-    return _view_html([("cif", data)], styles, height=height, clickable=clickable)
+    html = _view_html([("cif", data)], styles, height=height, clickable=clickable)
+    _HTML_CACHE[key] = html
+    return html
 
 
 def legend(items: list[tuple[str, str]]) -> None:

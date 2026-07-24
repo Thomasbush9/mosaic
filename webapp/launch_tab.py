@@ -178,10 +178,16 @@ def render(cfg: dict) -> dict:
 
     if tgt.structure and (ep or pt):
         with st.expander("3D — where this binds", expanded=False):
-            viewer.legend([("target", viewer.C_TARGET),
-                           ("epitope", viewer.C_HOTSPOT)])
-            viewer.show(viewer.target_view(tgt.structure, ep, clickable=True))
-            st.caption("Click a residue to label it with its number.")
+            # Rendering inlines the 3Dmol.js bundle, so build it only on demand
+            # rather than on every rerun of this tab.
+            if st.checkbox("Render 3D view", key="launch_show3d"):
+                viewer.legend([("target", viewer.C_TARGET),
+                               ("epitope", viewer.C_HOTSPOT)])
+                viewer.show(viewer.target_view(tgt.structure, ep, clickable=True))
+                st.caption("Click a residue to label it with its number.")
+            else:
+                st.caption("Enable to render the target with the epitope "
+                           "highlighted.")
     elif not tgt.structure:
         st.caption("Predict a structure in the Generate tab to pick the "
                    "epitope visually.")

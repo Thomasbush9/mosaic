@@ -62,6 +62,62 @@ def _generate_form(node: PL.Node, targets) -> None:
         st.warning("This generator needs a target structure — predict one first.")
 
 
+def _hallucinate_form(node: PL.Node, targets) -> None:
+    tnames = [t.name for t in targets]
+    cur = node.params.get("target_name")
+    tgt = next((t for t in targets if t.name == cur), targets[0] if targets else None)
+    if targets:
+        tgt = next(t for t in targets
+                   if t.name == st.selectbox("Target", tnames,
+                                             index=tnames.index(tgt.name) if tgt else 0,
+                                             key=f"{node.id}_htgt"))
+    st.caption("Designs binders from noise against the chosen structure model(s). "
+               "Each candidate is a full optimization — costly per design, so keep "
+               "the count modest. This is the third, backbone-prior-free route.")
+    opts = ["boltz2", "boltz1", "af2", "of3", "protenix"]
+    chosen = st.multiselect(
+        "Fold against", opts,
+        default=[m["name"] for m in node.params.get("models", [])] or ["boltz2"],
+        key=f"{node.id}_hmodels",
+        help="The structure model(s) whose confidence the hallucination "
+             "maximizes. Boltz2 is a good single choice.")
+    c = st.columns(4)
+    gpus = c[0].number_input(
+        "GPU tasks (array)", 1, 512, int(node.params.get("array", 1)),
+        key=f"{node.id}_harr",
+        help="In-node fan-out: this many SLURM array tasks, one GPU each, run "
+             "in parallel and each seeds off its array index. No extra node.")
+    num = c[1].number_input(
+        "designs per task (batch)", 1, 64, int(node.params.get("num_designs", 8)),
+        key=f"{node.id}_hn",
+        help="Trajectories vmapped within one GPU task. Total hallucinated "
+             "= GPU tasks × this. Each design is a full optimization, so this "
+             "is the costly stage — scale with intent.")
+    soft = c[2].number_input("soft steps", 1, 300,
+                            int(node.params.get("soft_steps", 60)),
+                            key=f"{node.id}_hsoft")
+    sharp = c[3].number_input("sharp steps", 1, 200,
+                             int(node.params.get("sharp_steps", 25)),
+                             key=f"{node.id}_hsharp")
+    d = st.columns(2)
+    blen = d[0].number_input("binder_length", 20, 200,
+                            int(node.params.get("binder_length", 80)),
+                            key=f"{node.id}_hlen")
+    thr = d[1].number_input("max concurrent tasks (0 = SLURM decides)", 0, 512,
+                           int(node.params.get("array_throttle", 0)),
+                           key=f"{node.id}_hthr")
+    st.caption(f"Total hallucinated: **{int(gpus) * int(num)}** "
+               f"({int(gpus)} tasks × {int(num)}).")
+    node.params = {**node.params,
+                   "models": [{"name": m} for m in chosen],
+                   "array": int(gpus), "array_throttle": int(thr),
+                   "num_designs": int(num), "binder_length": int(blen),
+                   "soft_steps": int(soft), "sharp_steps": int(sharp),
+                   "target_name": tgt.name if tgt else "",
+                   "target_fasta": str(tgt.fasta) if tgt else "",
+                   "target_msa": str(tgt.msa) if tgt and tgt.msa else ""}
+
+
 def _screen_form(node: PL.Node) -> None:
     c = st.columns(3)
     model = c[0].selectbox("Refold with", ["boltz2", "boltz1", "af2", "of3", "protenix"],
@@ -104,8 +160,28 @@ def _optimize_form(node: PL.Node, targets) -> None:
         "seed noise", 0.0, 0.5, float(cfg["binder"].get("init_noise", 0.1)), 0.02,
         key=f"{node.id}_noise",
         help="init_fasta and epitope come from the upstream node automatically.")
+    oc = st.columns(3)
+    top_k = oc[0].number_input(
+        "Refine only the top-K from upstream (0 = all)", 0, 5000,
+        int(node.params.get("top_k", 0)), key=f"{node.id}_topk",
+        help="A screen ranks best-first; this spends the gradient stage only on "
+             "its winners.")
+    gpus = oc[1].number_input(
+        "GPU tasks (array)", 1, 512, int(node.params.get("array", 1)),
+        key=f"{node.id}_oarr",
+        help="In-node fan-out: this many array tasks, one GPU each. Each task "
+             "refines a different window of the top-K (run_design offsets by "
+             "seed×batch), so total optimized = tasks × config run.batch.")
+    thr = oc[2].number_input("max concurrent (0 = SLURM decides)", 0, 512,
+                            int(node.params.get("array_throttle", 0)),
+                            key=f"{node.id}_othr")
+    batch = int(cfg.get("run", {}).get("batch", 4))
+    st.caption(f"Total optimized: **{int(gpus) * batch}** "
+               f"({int(gpus)} tasks × batch {batch}); seeded from top "
+               f"{int(top_k) or 'all'}.")
     node.params = {**node.params, "config": cfg,
-                   "models": cfg.get("models", [])}
+                   "models": cfg.get("models", []), "top_k": int(top_k),
+                   "array": int(gpus), "array_throttle": int(thr)}
     st.caption("Configure the full objective in the **Launch** tab, then check the "
                "box above to import it here.")
 
@@ -169,6 +245,8 @@ def render(cfg: dict) -> None:
         with st.container():
             if node.type == "generate":
                 _generate_form(node, targets)
+            elif node.type == "hallucinate":
+                _hallucinate_form(node, targets)
             elif node.type == "screen":
                 _screen_form(node)
             elif node.type == "optimize":

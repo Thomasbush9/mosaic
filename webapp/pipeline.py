@@ -38,13 +38,27 @@ NODE_TYPES: dict[str, dict[str, Any]] = {
         "gpu": True,
         "blurb": "BoltzGen or Proteina propose binder backbones + sequences.",
     },
+    "hallucinate": {
+        "label": "Hallucinate",
+        "produces": "proposal_set",         # so merge/screen consume it uniformly
+        "accepts": [],                       # root: designs from noise, not a node
+        "min_inputs": 0, "max_inputs": 0,
+        "gpu": True,
+        "blurb": "Gradient-design binders from random NOISE against a structure "
+                 "model's confidence — no backbone prior, mosaic's core method "
+                 "run as generation. Each design is a full optimization, so it "
+                 "is far costlier per candidate than BoltzGen; the per-job count "
+                 "is bounded by GPU memory (vmapped trajectories).",
+    },
     "merge": {
         "label": "Merge",
         "produces": "proposal_set",
         "accepts": ["proposal_set"],
         "min_inputs": 2, "max_inputs": 16,
         "gpu": False,
-        "blurb": "Combine several proposal sets into one pool (fan-in).",
+        "blurb": "Combine several proposal sets into one pool (fan-in). Mixes "
+                 "heterogeneous generators — BoltzGen, Proteina, Hallucinate — "
+                 "into one candidate pool for a shared screen.",
     },
     "screen": {
         "label": "Screen",
@@ -126,8 +140,8 @@ def validate(p: Pipeline) -> list[str]:
             errs.append(f"{n.id}: needs at least {spec['min_inputs']} input(s).")
         if k > spec["max_inputs"]:
             errs.append(f"{n.id}: takes at most {spec['max_inputs']} input(s).")
-        if n.type == "generate" and not n.params.get("target_fasta"):
-            errs.append(f"{n.id}: generate needs a target.")
+        if n.type in ("generate", "hallucinate") and not n.params.get("target_fasta"):
+            errs.append(f"{n.id}: {n.type} needs a target.")
     if not _acyclic(p):
         errs.append("Pipeline has a cycle — it must be a DAG.")
     return errs
@@ -205,9 +219,16 @@ def _node_caption(n: Node) -> str:
     if n.type == "screen":
         mp = "+MPNN" if pr.get("inverse_fold", True) else ""
         return f"{pr.get('model', '?')}{mp}"
+    if n.type == "hallucinate":
+        models = "+".join(m.get("name", "") for m in pr.get("models", []))
+        total = int(pr.get("array", 1) or 1) * int(pr.get("num_designs", 0) or 0)
+        return f"{models or 'loss'} · {total or '?'}× from noise"
     if n.type == "optimize":
         models = "+".join(m.get("name", "") for m in pr.get("models", []))
-        return models or "loss"
+        tk = pr.get("top_k")
+        arr = int(pr.get("array", 1) or 1)
+        return (models or "loss") + (f" · ×{arr}" if arr > 1 else "") \
+            + (f" · top {tk}" if tk else "")
     return ""
 
 
@@ -264,9 +285,22 @@ def submit(p: Pipeline, *, repo: Path, workdir: Path, account: str,
         cmd += [f"--cpus-per-task={r.get('cpus', 8 if spec['gpu'] else 2)}",
                 f"--mem={r.get('mem', '96G' if spec['gpu'] else '16G')}",
                 f"--time={r.get('time_limit', '06:00:00' if spec['gpu'] else '01:00:00')}"]
+        # In-node fan-out: a node with array>1 becomes a SLURM array, one GPU
+        # task per index. Each task seeds off SLURM_ARRAY_TASK_ID and writes its
+        # own designs_seed{i}.json; the downstream node gathers by globbing them
+        # (screen/merge already read every designs_seed*.json). afterok on an
+        # array's parent id waits for ALL tasks, so the dependency chain still
+        # holds with no extra node. This is how hallucinate/optimize scale past
+        # one GPU's batch without adding a merge node to the graph.
+        arr = int(n.params.get("array", 1) or 1)
+        outfmt = "job-%j.out"
+        if arr > 1:
+            thr = int(n.params.get("array_throttle", 0) or 0)
+            cmd.append(f"--array=0-{arr - 1}" + (f"%{thr}" if thr else ""))
+            outfmt = "job-%A_%a.out"       # %j collides across array tasks
         if dep:
             cmd.append(dep)
-        cmd += [f"--output={out}/job-%j.out",
+        cmd += [f"--output={out}/{outfmt}",
                 f"--export=ALL,NODE_DIR={out}",
                 "singularity/pipeline-node.sbatch"]
 

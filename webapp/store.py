@@ -6,6 +6,7 @@ uses between `results.py` and `results_tab.py`.
 
 from __future__ import annotations
 
+import functools
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,54 @@ from pathlib import Path
 # REPO stays fixed — it is where the job scripts live, not where data goes.
 REPO = Path(__file__).resolve().parent.parent
 _WORKDIR = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup")
+
+# --------------------------------------------------------------------------
+# Memoization
+#
+# Streamlit reruns this whole module's callers on every widget interaction, and
+# list_targets() (which reads every MSA in full to count depth) is called at the
+# top of three tabs. On a login node — where FASRC's arbiter kills CPU-heavy
+# processes — re-reading multi-MB a3m files on every click is exactly what gets
+# the app killed. So the file reads are memoized, content-addressed by
+# (path, mtime, size): a file that has not changed is never re-read, and a job
+# that writes a new result changes the signature so the next Refresh picks it up.
+#
+# Kept as a plain process-local dict rather than st.cache_data so store.py stays
+# free of any Streamlit dependency and works unchanged from a CLI or a test.
+# --------------------------------------------------------------------------
+_CACHE: dict = {}
+
+
+def _sig(path: Path):
+    try:
+        s = path.stat()
+        return (s.st_mtime_ns, s.st_size)
+    except OSError:
+        return None
+
+
+def _by_file(fn):
+    """Memoize a single-path reader on that file's (mtime, size)."""
+    @functools.wraps(fn)
+    def wrap(path, *a, **k):
+        path = Path(path)
+        key = (fn.__name__, str(path), _sig(path), a, tuple(sorted(k.items())))
+        if key not in _CACHE:
+            _CACHE[key] = fn(path, *a, **k)
+        return _CACHE[key]
+    return wrap
+
+
+def _glob_sig(root: Path, pattern: str):
+    """A signature of a directory's matching files, for cache invalidation.
+
+    Changes when a file is added, removed, or rewritten — so a cached scan is
+    reused across reruns but a Refresh after a job finishes recomputes.
+    """
+    out = []
+    for p in sorted(root.glob(pattern)):
+        out.append((p.name, _sig(p)))
+    return tuple(out)
 
 
 def set_workdir(path) -> None:
@@ -47,6 +96,7 @@ class Target:
         return len(self.sequence)
 
 
+@_by_file
 def read_fasta(path: Path) -> str:
     return "".join(
         ln.strip() for ln in path.read_text().splitlines()
@@ -54,6 +104,7 @@ def read_fasta(path: Path) -> str:
     ).upper()
 
 
+@_by_file
 def msa_depth(path: Path) -> int:
     """Unique sequences in an a3m. Depth is the honest measure of MSA value —
     a file can be large and still contain only near-duplicates."""
@@ -83,26 +134,69 @@ def list_targets() -> list[Target]:
 def is_campaign_dir(d: Path) -> bool:
     """Scored designs, as opposed to BoltzGen proposals which share the tree
     with a different schema."""
+    key = ("is_campaign_dir", str(d), _glob_sig(d, "*.json"))
+    if key in _CACHE:
+        return _CACHE[key]
+    result = False
     for f in d.glob("*.json"):
         try:
             if "results" in json.loads(f.read_text()):
-                return True
+                result = True
+                break
         except Exception:
             continue
-    return False
+    _CACHE[key] = result
+    return result
+
+
+def _campaign_path(name: str) -> Path:
+    """Resolve a campaign name to its directory.
+
+    Two roots feed the Results tab: single-stage campaigns live under
+    designs/<name>, while a pipeline DAG writes each node under
+    pipelines/<pipeline>/<node>. A name that carries a slash is the latter and
+    is joined onto the working directory verbatim; a bare name is a designs/
+    campaign. This is what lets an optimize/hallucinate node's output show up in
+    Results without copying it out of the pipeline tree.
+    """
+    if "/" in name:
+        return _WORKDIR / name
+    return sub("designs") / name
+
+
+def _has_design_json(d: Path) -> bool:
+    """A design_set: at least one designs_seed*.json (loss + sequence rows).
+
+    Deliberately narrower than is_campaign_dir — a screen node's screen.json
+    also has a `results` key but a different schema, and belongs in the screens
+    list, not here.
+    """
+    return next(iter(d.glob("designs_seed*.json")), None) is not None
 
 
 def list_campaigns() -> list[str]:
+    out: list[str] = []
     root = sub("designs")
-    if not root.exists():
-        return []
-    return sorted(p.name for p in root.glob("*") if p.is_dir() and is_campaign_dir(p))
+    if root.exists():
+        out += [p.name for p in root.glob("*")
+                if p.is_dir() and is_campaign_dir(p)]
+    # Pipeline node outputs that are design_sets (optimize / hallucinate nodes).
+    proot = _WORKDIR / "pipelines"
+    if proot.exists():
+        for node in proot.glob("*/*"):
+            if node.is_dir() and _has_design_json(node):
+                out.append(f"pipelines/{node.parent.name}/{node.name}")
+    return sorted(out)
 
 
 def load_designs(campaign: str) -> list[dict]:
     """Flatten a campaign into one row per design, best first."""
+    root = _campaign_path(campaign)
+    key = ("load_designs", str(root), _glob_sig(root, "*.json"))
+    if key in _CACHE:
+        return _CACHE[key]
     rows = []
-    for p in sorted((sub("designs") / campaign).glob("*.json")):
+    for p in sorted(root.glob("*.json")):
         try:
             d = json.loads(p.read_text())
         except Exception:
@@ -120,17 +214,21 @@ def load_designs(campaign: str) -> list[dict]:
                 "sequence": r["sequence"],
             })
     rows.sort(key=lambda r: r["loss"])
+    _CACHE[key] = rows
     return rows
 
 
 def campaign_config(campaign: str) -> dict | None:
     """The resolved config a campaign ran with, if it recorded one."""
-    for p in sorted((sub("designs") / campaign).glob("config_seed*.json")):
+    root = _campaign_path(campaign)
+    # A pipeline node writes its resolved objective to config.json.
+    for p in sorted(root.glob("config_seed*.json")) + \
+            ([root / "config.json"] if (root / "config.json").is_file() else []):
         try:
             return json.loads(p.read_text())
         except Exception:
             continue
-    for p in sorted((sub("designs") / campaign).glob("designs_seed*.json")):
+    for p in sorted(root.glob("designs_seed*.json")):
         try:
             return json.loads(p.read_text()).get("config")
         except Exception:
@@ -140,15 +238,21 @@ def campaign_config(campaign: str) -> dict | None:
 
 def list_screens() -> list[str]:
     """Directories containing screen.json (refold-and-rank results)."""
+    out: list[str] = []
     root = sub("designs")
-    if not root.exists():
-        return []
-    return sorted(p.name for p in root.glob("*")
-                  if p.is_dir() and (p / "screen.json").exists())
+    if root.exists():
+        out += [p.name for p in root.glob("*")
+                if p.is_dir() and (p / "screen.json").exists()]
+    proot = _WORKDIR / "pipelines"
+    if proot.exists():
+        for node in proot.glob("*/*"):
+            if (node / "screen.json").is_file():
+                out.append(f"pipelines/{node.parent.name}/{node.name}")
+    return sorted(out)
 
 
 def load_screen(name: str) -> dict | None:
-    f = sub("designs") / name / "screen.json"
+    f = _campaign_path(name) / "screen.json"
     if not f.is_file():
         return None
     try:

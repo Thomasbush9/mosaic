@@ -104,16 +104,19 @@ def render(cfg: dict) -> None:
             show_selection(tgt.sequence, hot, "Hotspots")
             if tgt.structure:
                 with st.expander("3D — pick hotspots off the structure",
-                                 expanded=bool(hot)):
+                                 expanded=False):
                     st.caption(
                         "Click a residue to label it with its number, then type "
                         "that into the box above. py3Dmol renders in an iframe "
                         "with no channel back to Python, so clicks cannot fill "
                         "the field directly.")
-                    viewer.legend([("target", viewer.C_TARGET),
-                                   ("hotspots", viewer.C_HOTSPOT)])
-                    viewer.show(viewer.target_view(
-                        tgt.structure, hot, chain=params.get("target_chain", "A")))
+                    # The viewer inlines the 3Dmol.js bundle; build on demand.
+                    if st.checkbox("Render 3D view", key=f"show3d_{gname}"):
+                        viewer.legend([("target", viewer.C_TARGET),
+                                       ("hotspots", viewer.C_HOTSPOT)])
+                        viewer.show(viewer.target_view(
+                            tgt.structure, hot,
+                            chain=params.get("target_chain", "A")))
             if not hot:
                 st.caption(
                     "No hotspots — the generator chooses where to bind."

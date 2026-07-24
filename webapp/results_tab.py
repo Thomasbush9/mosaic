@@ -14,52 +14,52 @@ import store
 # Validated categorical palette, fixed order, never cycled.
 C_DESIGN, C_NATURAL = "#2a78d6", "#1baf7a"
 
+# Charts use Altair, which ships with Streamlit (Vega-Lite), rather than plotly:
+# the plotly wheel is ~45 MB and its whole bundle is pushed to the browser on
+# every chart. Altair is already present and an order of magnitude lighter — the
+# point of this app is to stay cheap enough to run on a login node.
+
 
 def _hist(values: list[float], nbins: int = 24):
-    import plotly.graph_objects as go
-    fig = go.Figure(go.Histogram(x=values, nbinsx=nbins, marker_color=C_DESIGN))
-    fig.update_layout(
-        height=260, margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="loss (lower is better)", yaxis_title="designs",
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        bargap=0.05,
-    )
-    return fig
+    import altair as alt
+    import pandas as pd
+    df = pd.DataFrame({"loss": values})
+    return alt.Chart(df).mark_bar(color=C_DESIGN).encode(
+        alt.X("loss:Q", bin=alt.Bin(maxbins=nbins),
+              title="loss (lower is better)"),
+        alt.Y("count()", title="designs"),
+    ).properties(height=260)
 
 
 def _composition_fig(comp: dict[str, float]):
-    import plotly.graph_objects as go
+    import altair as alt
+    import pandas as pd
     aas = list(store.NATURAL_AA)
-    fig = go.Figure([
-        go.Bar(x=aas, y=[comp.get(a, 0.0) for a in aas], name="designed",
-               marker_color=C_DESIGN),
-        go.Bar(x=aas, y=[store.NATURAL_AA[a] for a in aas], name="natural",
-               marker_color=C_NATURAL),
-    ])
-    fig.update_layout(
-        height=300, margin=dict(l=10, r=10, t=10, b=10), barmode="group",
-        yaxis_title="% of residues", bargap=0.25, bargroupgap=0.05,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", y=1.15),
+    df = pd.DataFrame(
+        [{"aa": a, "pct": comp.get(a, 0.0), "kind": "designed"} for a in aas]
+        + [{"aa": a, "pct": store.NATURAL_AA[a], "kind": "natural"} for a in aas]
     )
-    return fig
+    return alt.Chart(df).mark_bar().encode(
+        x=alt.X("aa:N", sort=aas, title=None),
+        y=alt.Y("pct:Q", title="% of residues"),
+        xOffset="kind:N",
+        color=alt.Color("kind:N", legend=alt.Legend(orient="top", title=None),
+                        scale=alt.Scale(domain=["designed", "natural"],
+                                        range=[C_DESIGN, C_NATURAL])),
+    ).properties(height=300)
 
 
 def _per_seed_fig(rows: list[dict]):
-    import plotly.graph_objects as go
-    seeds = sorted({r["seed"] for r in rows if r["seed"] is not None})
-    fig = go.Figure(go.Scatter(
-        x=[r["seed"] for r in rows], y=[r["loss"] for r in rows],
-        mode="markers", marker=dict(size=10, color=C_DESIGN,
-                                    line=dict(width=2, color="white")),
-    ))
-    fig.update_layout(
-        height=280, margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_title="seed", yaxis_title="loss",
-        xaxis=dict(tickmode="array", tickvals=seeds),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-    )
-    return fig
+    import altair as alt
+    import pandas as pd
+    df = pd.DataFrame([{"seed": r["seed"], "loss": r["loss"]}
+                      for r in rows if r["seed"] is not None])
+    return alt.Chart(df).mark_circle(
+        size=110, color=C_DESIGN, opacity=1, stroke="white", strokeWidth=1.5,
+    ).encode(
+        x=alt.X("seed:O", title="seed"),
+        y=alt.Y("loss:Q", title="loss"),
+    ).properties(height=280)
 
 
 def render() -> None:
@@ -141,16 +141,18 @@ def render() -> None:
         s1, s2 = st.columns(2)
         with s1:
             st.caption("Loss distribution")
-            st.plotly_chart(_hist(losses), width="stretch")
+            st.altair_chart(_hist(losses), use_container_width=True)
         with s2:
             st.caption("Spread across seeds — clustering by seed means the "
                        "starting point dominates, not the objective")
-            st.plotly_chart(_per_seed_fig(rows), width="stretch")
+            st.altair_chart(_per_seed_fig(rows), use_container_width=True)
         st.caption("Composition vs natural frequencies")
-        st.plotly_chart(_composition_fig(
-            store.composition([r["sequence"] for r in shown])), width="stretch")
+        st.altair_chart(_composition_fig(
+            store.composition([r["sequence"] for r in shown])),
+            use_container_width=True)
     except ImportError:
-        st.info("Install `plotly` for charts — the tables above work without it.")
+        st.info("Charts need `altair` (ships with Streamlit) — the tables "
+                "above work without it.")
 
     ids = store.pairwise_identity([r["sequence"] for r in shown])
     if ids:

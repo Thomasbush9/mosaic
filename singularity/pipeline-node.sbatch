@@ -19,5 +19,15 @@ export MOSAIC_SIF="${MOSAIC_SIF:-$SETUP/images/mosaic.sif}"
 export MOSAIC_WEIGHTS="${MOSAIC_WEIGHTS:-$SETUP/weights}"
 export MOSAIC_SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$USER/mosaic}"
 # pipeline_node.py runs on the host (it only orchestrates + does light file work),
-# and calls into the container via mosaic-exec.sh for the GPU stages.
-python3 "$REPO/pipeline_node.py"
+# and calls into the container via mosaic-exec.sh for the GPU stages. The host's
+# system python3 is 3.6 — too old for this codebase (PEP 604 unions, `from
+# __future__ import annotations`) — and proposals.py needs gemmi for proposal-set
+# structure IO. The webapp venv (3.13, with gemmi) is exactly the right host
+# interpreter; override with MOSAIC_HOST_PYTHON if it lives elsewhere.
+HOST_PY="${MOSAIC_HOST_PYTHON:-$REPO/webapp/.venv/bin/python}"
+if [[ ! -x "$HOST_PY" ]]; then
+    echo "error: host python not found at $HOST_PY" >&2
+    echo "       build webapp/.venv or set MOSAIC_HOST_PYTHON" >&2
+    exit 70
+fi
+"$HOST_PY" "$REPO/pipeline_node.py"

@@ -45,6 +45,11 @@ def main() -> int:
     ap.add_argument("--target-name", default=None)
     ap.add_argument("--binder-length", type=int, default=80)
     ap.add_argument("--num-designs", type=int, default=8)
+    ap.add_argument("--chunk", type=int, default=32,
+                    help="sample in fixed-size chunks — Proteina vmaps the whole "
+                         "batch at once and memory scales with it, so a large "
+                         "--num-designs OOMs the GPU. 32 is memory-safe; output "
+                         "is identical, one compile.")
     ap.add_argument("--hotspots", default="",
                     help="1-based target residues the binder should engage, "
                          "e.g. '95-110,143'. Proteina conditions on these, so "
@@ -96,56 +101,73 @@ def main() -> int:
         keys = jax.random.split(key, n)
         return jax.vmap(lambda k: generate(denoiser, mask, k, target=target_cond))(keys)
 
-    t0 = time.time()
-    bbs, lats = sample_batch(jax.random.PRNGKey(a.seed), a.num_designs)
-    jax.block_until_ready(bbs)
-    print(f"sampled {a.num_designs} backbones in {time.time() - t0:.1f}s")
+    @eqx.filter_jit
+    def decode_batch(bbs, lats):
+        return jax.vmap(
+            lambda b, l: decoder(DecoderBatch(z_latent=l, ca_coors=b, mask=mask))
+        )(bbs, lats)
 
-    decs = jax.vmap(
-        lambda b, l: decoder(DecoderBatch(z_latent=l, ca_coors=b, mask=mask))
-    )(bbs, lats)
+    # Sample in fixed-size chunks. Proteina vmaps the whole batch at once and
+    # memory scales with it — 500 designs needs ~105 GiB and OOMs an 80 GB GPU.
+    # A constant chunk keeps memory flat and compiles once; fold_in gives each
+    # chunk a distinct key so designs stay independent across chunks.
+    chunk = max(1, min(int(a.chunk), a.num_designs))
+    n_chunks = (a.num_designs + chunk - 1) // chunk
 
     out.mkdir(parents=True, exist_ok=True)
     seqs: list[str] = []
-    for i in range(a.num_designs):
-        aatype = np.array(jax.tree.map(lambda x: x[i], decs).aatype)
-        seq = "".join(AA_CODES[j] for j in aatype)
-        seqs.append(seq)
-        print(f"[{i}] {seq}")
+    gi = 0
+    t0 = time.time()
+    for ci in range(n_chunks):
+        bbs, lats = sample_batch(
+            jax.random.fold_in(jax.random.PRNGKey(a.seed), ci), chunk)
+        jax.block_until_ready(bbs)
+        decs = decode_batch(bbs, lats)
+        for bi in range(chunk):
+            if gi >= a.num_designs:
+                break
+            dsl = jax.tree.map(lambda x: x[bi], decs)
+            aatype = np.array(dsl.aatype)
+            seq = "".join(AA_CODES[j] for j in aatype)
+            seqs.append(seq)
+            print(f"[{gi}] {seq}")
 
-        # Write binder + target as one complex, so the epitope can be derived
-        # from the pose exactly as it is for BoltzGen.
-        cs = gemmi.Structure()
-        model = gemmi.Model("1")
-        bch = gemmi.Chain("A")
-        coords = np.array(jax.tree.map(lambda x: x[i], decs).ca_coors) \
-            if hasattr(jax.tree.map(lambda x: x[i], decs), "ca_coors") else np.array(bbs[i])
-        for k, (aa, xyz) in enumerate(zip(aatype, coords), start=1):
-            res = gemmi.Residue()
-            res.name = AA_3LETTER[AA_CODES[aa]]
-            res.seqid = gemmi.SeqId(k, " ")
-            at = gemmi.Atom()
-            at.name, at.element = "CA", gemmi.Element("C")
-            at.pos = gemmi.Position(*[float(v) for v in xyz[:3]])
-            res.add_atom(at)
-            bch.add_residue(res)
-        model.add_chain(bch)
-        tch = gemmi.Chain("B")
-        tcoords = np.array(target_cond.coords)
-        for k, (aa, xyz) in enumerate(zip(np.array(target_cond.seq), tcoords), start=1):
-            res = gemmi.Residue()
-            res.name = AA_3LETTER[AA_CODES[aa]]
-            res.seqid = gemmi.SeqId(k, " ")
-            at = gemmi.Atom()
-            at.name, at.element = "CA", gemmi.Element("C")
-            pos = xyz[1] if np.ndim(xyz) > 1 else xyz
-            at.pos = gemmi.Position(*[float(v) for v in np.asarray(pos)[:3]])
-            res.add_atom(at)
-            tch.add_residue(res)
-        model.add_chain(tch)
-        cs.add_model(model)
-        cs.setup_entities()
-        cs.make_mmcif_document().write_file(str(out / f"design_{i:03d}.cif"))
+            # Write binder + target as one complex, so the epitope can be derived
+            # from the pose exactly as it is for BoltzGen.
+            cs = gemmi.Structure()
+            model = gemmi.Model("1")
+            bch = gemmi.Chain("A")
+            coords = np.array(dsl.ca_coors) if hasattr(dsl, "ca_coors") \
+                else np.array(bbs[bi])
+            for k, (aa, xyz) in enumerate(zip(aatype, coords), start=1):
+                res = gemmi.Residue()
+                res.name = AA_3LETTER[AA_CODES[aa]]
+                res.seqid = gemmi.SeqId(k, " ")
+                at = gemmi.Atom()
+                at.name, at.element = "CA", gemmi.Element("C")
+                at.pos = gemmi.Position(*[float(v) for v in xyz[:3]])
+                res.add_atom(at)
+                bch.add_residue(res)
+            model.add_chain(bch)
+            tch = gemmi.Chain("B")
+            tcoords = np.array(target_cond.coords)
+            for k, (aa, xyz) in enumerate(zip(np.array(target_cond.seq), tcoords), start=1):
+                res = gemmi.Residue()
+                res.name = AA_3LETTER[AA_CODES[aa]]
+                res.seqid = gemmi.SeqId(k, " ")
+                at = gemmi.Atom()
+                at.name, at.element = "CA", gemmi.Element("C")
+                pos = xyz[1] if np.ndim(xyz) > 1 else xyz
+                at.pos = gemmi.Position(*[float(v) for v in np.asarray(pos)[:3]])
+                res.add_atom(at)
+                tch.add_residue(res)
+            model.add_chain(tch)
+            cs.add_model(model)
+            cs.setup_entities()
+            cs.make_mmcif_document().write_file(str(out / f"design_{gi:03d}.cif"))
+            gi += 1
+    print(f"sampled {a.num_designs} backbones in {time.time() - t0:.1f}s "
+          f"({chunk}/chunk, {n_chunks} chunks)")
 
     cifs = sorted(out.glob("design_*.cif"))
     if hot0:
