@@ -70,7 +70,12 @@ def show(html: str, height: int = 480) -> None:
 # is not free. Streamlit reruns the caller on every widget change, so the result
 # is memoized on (file mtime, hotspots, options): while the viewer is open,
 # fiddling with an unrelated widget elsewhere no longer rebuilds the blob.
+# Bounded, unlike an ordinary memo: each entry is a whole inlined 3Dmol.js
+# bundle plus the structure text, so these are megabytes apiece and a handful of
+# them is already a meaningful share of the 8 GiB the login node allows a user
+# across all their processes. A few is all anyone flips between.
 _HTML_CACHE: dict = {}
+_HTML_CACHE_MAX = 6
 
 
 def target_view(cif_path: Path, hotspots1: list[int] | None = None,
@@ -95,6 +100,8 @@ def target_view(cif_path: Path, hotspots1: list[int] | None = None,
                        {"cartoon": {"color": C_HOTSPOT},
                         "stick": {"colorscheme": "orangeCarbon", "radius": 0.25}}))
     html = _view_html([("cif", data)], styles, height=height, clickable=clickable)
+    if len(_HTML_CACHE) >= _HTML_CACHE_MAX:
+        _HTML_CACHE.pop(next(iter(_HTML_CACHE)), None)
     _HTML_CACHE[key] = html
     return html
 

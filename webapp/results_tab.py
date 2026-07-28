@@ -144,15 +144,15 @@ def render() -> None:
         s1, s2 = st.columns(2)
         with s1:
             st.caption("Loss distribution")
-            st.altair_chart(_hist(losses), use_container_width=True)
+            st.altair_chart(_hist(losses), width="stretch")
         with s2:
             st.caption("Spread across seeds — clustering by seed means the "
                        "starting point dominates, not the objective")
-            st.altair_chart(_per_seed_fig(rows), use_container_width=True)
+            st.altair_chart(_per_seed_fig(rows), width="stretch")
         st.caption("Composition vs natural frequencies")
         st.altair_chart(_composition_fig(
             store.composition([r["sequence"] for r in shown])),
-            use_container_width=True)
+            width="stretch")
     except ImportError:
         st.info("Charts need `altair` (ships with Streamlit) — the tables "
                 "above work without it.")

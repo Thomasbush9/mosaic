@@ -170,10 +170,48 @@ def validate(p: Pipeline) -> list[str]:
             errs.append(f"{n.id}: needs at least {spec['min_inputs']} input(s).")
         if k > spec["max_inputs"]:
             errs.append(f"{n.id}: takes at most {spec['max_inputs']} input(s).")
-        if n.type in ("generate", "hallucinate") and not n.params.get("target_fasta"):
-            errs.append(f"{n.id}: {n.type} needs a target.")
+        errs += _node_requirements(n)
     if not _acyclic(p):
         errs.append("Pipeline has a cycle — it must be a DAG.")
+    return errs
+
+
+def _node_requirements(n: Node) -> list[str]:
+    """What each node type must carry for pipeline_node.py to run it.
+
+    These mirror the actual reads in pipeline_node.py rather than a general
+    notion of completeness. Every one of them was previously a run-time death
+    after the job had queued, waited and started: a generate node with no
+    structure raises KeyError('target_cif') at pipeline_node.py:71, and an
+    optimize node whose config never got a target hands run_design a --target of
+    None. Catching them here costs nothing and turns a lost GPU allocation into
+    a red line in the editor.
+    """
+    errs: list[str] = []
+    p = n.params
+    if n.type == "generate":
+        if not p.get("target_fasta"):
+            errs.append(f"{n.id}: generate needs a target.")
+        if not p.get("target_cif"):
+            errs.append(
+                f"{n.id}: {p.get('generator', 'this generator')} designs against "
+                "geometry and needs a target STRUCTURE — predict one in the "
+                "Generate tab first.")
+    elif n.type == "hallucinate":
+        if not p.get("target_fasta"):
+            errs.append(f"{n.id}: hallucinate needs a target.")
+        if not p.get("models"):
+            errs.append(f"{n.id}: pick at least one structure model to fold against.")
+    elif n.type == "optimize":
+        cfg = p.get("config") or {}
+        if not (cfg.get("target") or {}).get("fasta"):
+            errs.append(
+                f"{n.id}: the optimize objective has no target — pick one on the "
+                "node, or import a Launch config that has one.")
+        if not cfg.get("models"):
+            errs.append(f"{n.id}: the optimize objective has no structure model.")
+        if not cfg.get("losses"):
+            errs.append(f"{n.id}: the optimize objective has no loss terms.")
     return errs
 
 
@@ -306,15 +344,23 @@ def submit(p: Pipeline, *, repo: Path, workdir: Path, account: str,
         cmd = ["sbatch", "--parsable",
                f"--job-name=pipe-{p.name}-{n.id}",
                f"--account={account}", f"--partition={part}"]
-        # Resources per node type — overridable from the UI, with sane defaults.
-        r = (gpu_res or {"cpus": 8, "mem": "96G", "time_limit": "06:00:00"}) \
-            if spec["gpu"] else \
-            (cpu_res or {"cpus": 2, "mem": "16G", "time_limit": "01:00:00"})
+        # Resources resolve in three layers: the built-in default for the node's
+        # kind, the pipeline-wide setting from the UI, then the node's own
+        # `params["resources"]`. The per-node layer exists because the stages
+        # have genuinely different shapes — a generate node is one diffusion
+        # pass, an optimize node is hundreds of gradient steps — so a single
+        # pipeline walltime either wastes allocation or kills the long node.
+        res = {"cpus": 8, "mem": "96G", "time_limit": "06:00:00"} if spec["gpu"] \
+            else {"cpus": 2, "mem": "16G", "time_limit": "01:00:00"}
+        for layer in ((gpu_res if spec["gpu"] else cpu_res) or {},
+                      n.params.get("resources") or {}):
+            res.update({k: v for k, v in layer.items()
+                        if k in ("cpus", "mem", "time_limit") and v})
         if spec["gpu"]:
             cmd.append("--gres=gpu:1")
-        cmd += [f"--cpus-per-task={r.get('cpus', 8 if spec['gpu'] else 2)}",
-                f"--mem={r.get('mem', '96G' if spec['gpu'] else '16G')}",
-                f"--time={r.get('time_limit', '06:00:00' if spec['gpu'] else '01:00:00')}"]
+        cmd += [f"--cpus-per-task={res['cpus']}",
+                f"--mem={res['mem']}",
+                f"--time={res['time_limit']}"]
         # In-node fan-out: a node with array>1 becomes a SLURM array, one GPU
         # task per index. Each task seeds off SLURM_ARRAY_TASK_ID and writes its
         # own designs_seed{i}.json; the downstream node gathers by globbing them

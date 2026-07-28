@@ -8,10 +8,37 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from store import REPO
+
+# --------------------------------------------------------------------------
+# Time-based memoization for the two SLURM lookups that are drawn on every
+# rerun. accounts() and partitions() feed a selectbox in the resource picker,
+# which appears several times per page, so an uncached call meant half a dozen
+# subprocess spawns per keystroke — latency for the user and needless load on
+# slurmctld from an idle browser tab. Neither answer changes on the order of an
+# hour. Kept here as a plain dict rather than st.cache_data so this module stays
+# free of any Streamlit dependency, as the docstring promises.
+# --------------------------------------------------------------------------
+_TTL = 3600.0
+_MEMO: dict = {}
+
+
+def _memoized(key: str, fn, ttl: float = _TTL):
+    hit = _MEMO.get(key)
+    if hit is not None and (time.monotonic() - hit[0]) < ttl:
+        return hit[1]
+    val = fn()
+    _MEMO[key] = (time.monotonic(), val)
+    return val
+
+
+def forget_cluster_cache() -> None:
+    """Drop the memoized lookups, so a Refresh re-queries SLURM."""
+    _MEMO.clear()
 
 # bsabatini_lab has MaxJobs=0/MaxSubmit=0 and cannot submit anything, so this is
 # the default rather than a suggestion. Overridable per campaign in the UI.
@@ -202,6 +229,10 @@ def accounts(user: str | None = None) -> list[str]:
     """
     import os
     u = user or os.environ.get("USER", "")
+    return _memoized(f"accounts:{u}", lambda: _accounts_uncached(u))
+
+
+def _accounts_uncached(u: str) -> list[str]:
     p = _run(["sacctmgr", "-nP", "show", "assoc", f"user={u}",
               "format=Account,MaxSubmit"])
     out = []
@@ -218,6 +249,10 @@ def accounts(user: str | None = None) -> list[str]:
 
 
 def partitions() -> list[str]:
+    return _memoized("partitions", _partitions_uncached)
+
+
+def _partitions_uncached() -> list[str]:
     p = _run(["sinfo", "-h", "-o", "%P"])
     names = sorted({x.strip().rstrip("*") for x in p.stdout.split() if x.strip()})
     gpu = [n for n in names if "gpu" in n or "kempner" in n]

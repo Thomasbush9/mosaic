@@ -1,20 +1,24 @@
 """mosaic design webapp — sessions, launch, generate, monitor, results.
 
-Run on a cluster login node:
+Preferred way to run it, from the repo root:
 
-    webapp/.venv/bin/streamlit run webapp/app.py --server.port 8502 \
-        --server.address 127.0.0.1
-
-Then from your laptop:
-
-    ssh -L 8502:localhost:8502 <user>@holylogin06.rc.fas.harvard.edu
+    sbatch singularity/webapp.sbatch      # then read logs/webapp-<jobid>.out
 
 Nothing heavy runs in this process. The app reads files and queues SLURM jobs;
-every model evaluation happens in a batch job on a GPU node. That is what makes
-it safe on a login node, where FASRC's arbiter kills CPU-heavy processes.
+every model evaluation happens in a batch job on a GPU node. It is light enough
+for a login node, but a login node holds every user to a shared 8 GiB / 1-core
+cgroup and cannot keep a process alive past an SSH disconnect, so the batch job
+above is the route that actually stays up. See docs/WEBAPP.md.
 
 Layout follows ProtForge's: pure modules (store, cluster, session) hold the
 logic, tab modules hold the UI, this file is only bootstrap and dispatch.
+
+**One page renders per run.** Streamlit's st.tabs is client-side only: every
+`with tab:` body executes on every rerun regardless of which tab is showing, so
+six tabs meant six file scans and eight SLURM subprocess calls per keystroke —
+and an exception in any one of them blanked all six. Sidebar navigation renders
+exactly the page you are looking at, and the try/except below keeps a failure
+inside the page that caused it.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import cluster  # noqa: E402
 import design_config as dc  # noqa: E402
 import docs_tab  # noqa: E402
 import generate_tab  # noqa: E402
@@ -41,6 +46,8 @@ import session as sess  # noqa: E402
 import store  # noqa: E402
 
 st.set_page_config(page_title="mosaic design", page_icon="🧬", layout="wide")
+
+PAGES = ["Launch", "Generate", "Pipeline", "Monitor", "Results", "Docs"]
 
 # ---------------------------------------------------------------- session
 active = sess.active()
@@ -54,9 +61,21 @@ key = f"cfg::{active.id}"
 if key not in st.session_state:
     st.session_state[key] = dc.default_config()
 
+# A proposal shipped from Generate is applied by Launch, so follow the handoff.
+# Setting the nav key before the radio is constructed is what makes it stick;
+# afterwards Streamlit owns the key. This replaces the old ordering hack, in
+# which Launch had to be *rendered* before Generate even though it was shown
+# second, or a shipped proposal landed a rerun late.
+if (st.session_state.get("pending_proposal")
+        and st.session_state.get("nav") != "Launch"):
+    st.session_state["nav"] = "Launch"
+
 with st.sidebar:
     st.markdown("### mosaic design")
     st.caption(f"{os.environ.get('USER', '?')} @ {socket.gethostname()}")
+
+    page = st.radio("View", PAGES, key="nav", label_visibility="collapsed")
+    st.divider()
 
     sessions = sess.list_sessions()
     labels = {s.id: s.name for s in sessions}
@@ -115,31 +134,37 @@ with st.sidebar:
                        file_name="campaign_config.json", mime="application/json")
 
     st.divider()
+    if st.button("Refresh cluster info"):
+        # accounts/partitions are memoized for an hour; this is the escape hatch
+        # for the day an association or partition actually changes.
+        cluster.forget_cluster_cache()
+        st.rerun()
     st.caption("**Nothing heavy runs here.** The app queues SLURM jobs and reads "
                "their output.")
     st.caption("Docs: `docs/MANUAL.md` · `docs/MODELS.md` · `docs/WEBAPP.md`")
 
-# Generate first: it is the first stage of the pipeline (propose candidates),
-# and Launch consumes what it produces. Note Launch still RENDERS first below —
-# tab order is presentation, but a proposal shipped from Generate must be
-# applied before Launch draws its widgets, or the prefill lands a rerun late.
-generate, launch, pipe, monitor, results, docs = st.tabs(
-    ["Generate", "Launch", "Pipeline", "Monitor", "Results", "Docs"])
-
-with launch:
-    st.session_state[key] = launch_tab.render(st.session_state[key])
-
-with generate:
-    generate_tab.render(st.session_state[key])
-
-with pipe:
-    pipeline_tab.render(st.session_state[key])
-
-with monitor:
-    monitor_tab.render()
-
-with results:
-    results_tab.render()
-
-with docs:
-    docs_tab.render()
+# Dispatch. Each page is rendered inside its own error boundary: an exception
+# used to escape to Streamlit's script runner and replace the entire app with a
+# traceback, including the five pages that were fine. Now a broken page costs
+# you that page.
+try:
+    if page == "Launch":
+        st.session_state[key] = launch_tab.render(st.session_state[key])
+    elif page == "Generate":
+        generate_tab.render(st.session_state[key])
+    elif page == "Pipeline":
+        pipeline_tab.render(st.session_state[key])
+    elif page == "Monitor":
+        monitor_tab.render()
+    elif page == "Results":
+        results_tab.render()
+    elif page == "Docs":
+        docs_tab.render()
+except Exception as exc:  # noqa: BLE001 — the boundary is the point
+    st.error(f"The **{page}** page failed to render: {exc}")
+    st.caption("The other pages still work. If this followed loading a saved "
+               "pipeline or config, its stored values may disagree with what "
+               "the forms accept — the raw JSON editor on each pipeline node "
+               "lets you correct it.")
+    with st.expander("Traceback"):
+        st.exception(exc)

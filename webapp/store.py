@@ -33,6 +33,22 @@ _WORKDIR = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup")
 # --------------------------------------------------------------------------
 _CACHE: dict = {}
 
+# Entries are keyed by content signature, so a rewritten file adds an entry
+# rather than replacing one and the dict would otherwise grow for the life of
+# the process. That matters more here than it looks: on a login node the app
+# shares one 8 GiB cgroup with every shell, editor and job script the same user
+# has open, and this process is expected to stay up for days.
+_CACHE_MAX = 256
+
+
+def _cache_put(key, value):
+    """Insert, evicting the oldest quarter once the cache is full."""
+    if len(_CACHE) >= _CACHE_MAX:
+        for stale in list(_CACHE)[:_CACHE_MAX // 4]:
+            _CACHE.pop(stale, None)
+    _CACHE[key] = value
+    return value
+
 
 def _sig(path: Path):
     try:
@@ -49,7 +65,7 @@ def _by_file(fn):
         path = Path(path)
         key = (fn.__name__, str(path), _sig(path), a, tuple(sorted(k.items())))
         if key not in _CACHE:
-            _CACHE[key] = fn(path, *a, **k)
+            _cache_put(key, fn(path, *a, **k))
         return _CACHE[key]
     return wrap
 
@@ -159,8 +175,7 @@ def is_campaign_dir(d: Path) -> bool:
                 break
         except Exception:
             continue
-    _CACHE[key] = result
-    return result
+    return _cache_put(key, result)
 
 
 def _campaign_path(name: str) -> Path:
@@ -203,9 +218,7 @@ def list_campaigns() -> list[str]:
         for node in proot.glob("*/*"):
             if node.is_dir() and _has_design_json(node):
                 out.append(f"pipelines/{node.parent.name}/{node.name}")
-    out = sorted(out)
-    _CACHE[key] = out
-    return out
+    return _cache_put(key, sorted(out))
 
 
 def load_designs(campaign: str) -> list[dict]:
@@ -233,8 +246,7 @@ def load_designs(campaign: str) -> list[dict]:
                 "sequence": r["sequence"],
             })
     rows.sort(key=lambda r: r["loss"])
-    _CACHE[key] = rows
-    return rows
+    return _cache_put(key, rows)
 
 
 def campaign_config(campaign: str) -> dict | None:
@@ -270,9 +282,7 @@ def list_screens() -> list[str]:
         for node in proot.glob("*/*"):
             if (node / "screen.json").is_file():
                 out.append(f"pipelines/{node.parent.name}/{node.name}")
-    out = sorted(out)
-    _CACHE[key] = out
-    return out
+    return _cache_put(key, sorted(out))
 
 
 def load_screen(name: str) -> dict | None:

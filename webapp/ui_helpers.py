@@ -54,46 +54,125 @@ def show_selection(sequence: str, positions: list[int], label: str) -> None:
     st.caption(f"{label} — {len(positions)} residues: {shown}{more}")
 
 
+# --------------------------------------------------------------------------
+# Range reconciliation
+#
+# Values reach these widgets from data the catalog never governed: a node.json
+# written by a submitted run, an uploaded DAG, a hand-edited config. So the
+# catalog's declared bounds and the stored value genuinely can disagree — a
+# pipeline that really did run with num_designs=500 met a form that capped the
+# field at 200. Streamlit does not coerce in that situation, it raises
+# StreamlitValueAboveMaxError, and the exception escapes all the way to the
+# script runner, so one stale integer blanks the entire page rather than one
+# field. Clamping and saying so out loud is the only behaviour that keeps the
+# app usable; silently clamping would be worse than crashing.
+# --------------------------------------------------------------------------
+
+def _num(value, fallback, cast):
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return cast(fallback)
+
+
+def _fit(key: str, value, lo, hi):
+    """Clamp `value` into [lo, hi], and clamp any stale widget state too.
+
+    The session_state pass matters as much as the value pass: widget keys are
+    reused across a node's lifetime, so switching a generate node from a
+    generator whose num_designs caps at 5000 to one that caps at 200 leaves
+    5000 sitting in state under the same key, and Streamlit validates state
+    against the new bounds exactly as it validates `value`.
+    """
+    held = st.session_state.get(key)
+    if (isinstance(held, (int, float)) and not isinstance(held, bool)
+            and not (lo <= held <= hi)):
+        st.session_state[key] = min(max(held, lo), hi)
+    fitted = min(max(value, lo), hi)
+    return fitted, fitted != value
+
+
+def _report(name: str, original, fitted, lo, hi) -> None:
+    st.caption(
+        f":orange[**{name}** was saved as `{original}`, outside this field's "
+        f"range {lo}–{hi}. Showing `{fitted}`. Widen the range in "
+        f"`design_config.py`, or edit the node's raw JSON, if `{original}` was "
+        "what you meant.]")
+
+
 def widget(key: str, name: str, spec: dict, current):
     """One control, driven by the catalog's declared type."""
     t = spec["type"]
     label = name.replace("_", " ")
     help_ = spec.get("help")
     if t == "int":
-        return st.number_input(label, min_value=spec.get("min", 0),
-                               max_value=spec.get("max", 10000),
-                               value=int(current if current is not None
-                                         else spec.get("default", 0)),
-                               step=1, key=key, help=help_)
+        lo = _num(spec.get("min", 0), 0, int)
+        hi = _num(spec.get("max", 10000), 10000, int)
+        raw = _num(current if current is not None else spec.get("default", 0),
+                   lo, int)
+        val, clamped = _fit(key, raw, lo, hi)
+        out = st.number_input(label, min_value=lo, max_value=hi, value=val,
+                              step=1, key=key, help=help_)
+        if clamped:
+            _report(name, raw, val, lo, hi)
+        return out
     if t == "float":
-        return st.number_input(label, min_value=float(spec.get("min", 0.0)),
-                               max_value=float(spec.get("max", 1e6)),
-                               value=float(current if current is not None
-                                           else spec.get("default", 0.0)),
-                               step=0.05, format="%.3f", key=key, help=help_)
+        lo = _num(spec.get("min", 0.0), 0.0, float)
+        hi = _num(spec.get("max", 1e6), 1e6, float)
+        raw = _num(current if current is not None else spec.get("default", 0.0),
+                   lo, float)
+        val, clamped = _fit(key, raw, lo, hi)
+        out = st.number_input(label, min_value=lo, max_value=hi, value=val,
+                              step=0.05, format="%.3f", key=key, help=help_)
+        if clamped:
+            _report(name, raw, val, lo, hi)
+        return out
     if t == "bool":
         return st.checkbox(label, value=bool(current if current is not None
                                              else spec.get("default", False)),
                            key=key, help=help_)
     if t == "choice":
-        opts = spec["options"]
-        cur = current if current in opts else spec.get("default", opts[0])
-        return st.selectbox(label, opts, index=opts.index(cur), key=key, help=help_)
+        opts = list(spec["options"])
+        if not opts:
+            return current
+        # Fall back through stored value, then declared default, then first
+        # option: a stored string outside the list is a ValueError from
+        # list.index(), which lands on the user the same way the range error did.
+        for cand in (current, spec.get("default")):
+            if cand in opts:
+                cur = cand
+                break
+        else:
+            cur = opts[0]
+        if current is not None and current not in opts:
+            st.caption(f":orange[**{name}** was saved as `{current}`, which is "
+                       f"not one of {', '.join(map(str, opts))}. Showing "
+                       f"`{cur}`.]")
+        if st.session_state.get(key) not in opts:
+            st.session_state.pop(key, None)
+        return st.selectbox(label, opts, index=opts.index(cur), key=key,
+                            help=help_)
     if t in ("optint", "optfloat"):
         # Optional numerics need an explicit "unset": None is meaningful, e.g.
         # target_radius=None means "no target radius", not zero.
         use = st.checkbox(f"set {label}", value=current is not None, key=key + "_on")
         if not use:
             return None
-        if t == "optint":
-            return st.number_input(label, min_value=spec.get("min", 0),
-                                   max_value=spec.get("max", 10000),
-                                   value=int(current or spec.get("min", 0)),
-                                   step=1, key=key, help=help_)
-        return st.number_input(label, min_value=float(spec.get("min", 0.0)),
-                               max_value=float(spec.get("max", 1e6)),
-                               value=float(current or spec.get("min", 0.0)),
-                               step=0.5, format="%.2f", key=key, help=help_)
+        cast = int if t == "optint" else float
+        lo = _num(spec.get("min", 0), 0, cast)
+        hi = _num(spec.get("max", 10000 if cast is int else 1e6),
+                  10000 if cast is int else 1e6, cast)
+        raw = _num(current if current is not None else lo, lo, cast)
+        val, clamped = _fit(key, raw, lo, hi)
+        if cast is int:
+            out = st.number_input(label, min_value=lo, max_value=hi, value=val,
+                                  step=1, key=key, help=help_)
+        else:
+            out = st.number_input(label, min_value=lo, max_value=hi, value=val,
+                                  step=0.5, format="%.2f", key=key, help=help_)
+        if clamped:
+            _report(name, raw, val, lo, hi)
+        return out
     if t == "idxlist":
         # Rendered by the Binding site section instead — see binding_site().
         return current

@@ -25,28 +25,60 @@
 campaigns. Modelled on ProtForge's webapp — same shape, same SSH-forwarding
 access pattern.</p>
 <p><strong>Nothing heavy runs in the app.</strong> It reads files and queues SLURM jobs; every
-model evaluation happens in a batch job on a GPU node. That is what makes it
-safe to run on a login node, where FASRC's arbiter kills CPU-heavy processes.</p>
+model evaluation happens in a batch job on a GPU node. It never imports mosaic
+and never runs a model, which is what keeps it light enough for a login node —
+though see <strong>Access</strong> below for why a compute node is still the better home.</p>
+<p>One page renders per interaction. Streamlit re-executes the whole script on
+every widget change, and <code>st.tabs</code> is client-side only, so six tabs meant six
+file scans and eight SLURM queries per keystroke — and an exception anywhere
+replaced all six with a traceback. The sidebar renders only the page you are on,
+inside an error boundary.</p>
 <hr />
 <h2 id="access">Access</h2>
-<p>From your laptop:</p>
+<p><strong>Preferred — run it on a compute node.</strong> A login node holds every user to a
+shared 8 GiB / 1-core cgroup that covers all their processes at once, so the app
+competes with your own shells and editors and cannot be relied on to survive.
+The batch job gets its own cores:</p>
+<pre><code class="language-bash"># on the login node, from the repo root
+sbatch singularity/webapp.sbatch
+cat logs/webapp-&lt;jobid&gt;.out     # prints the exact one-hop ssh command
+</code></pre>
+<p>The job holds the app for its walltime (8 h by default — raise <code>--time</code> in the
+sbatch file for a longer session), and <code>scancel &lt;jobid&gt;</code> stops it.</p>
+<p><strong>Quick look — run it on the login node:</strong></p>
 <pre><code class="language-bash">bash webapp/connect.sh
 </code></pre>
-<p>It forwards a port, creates the virtual environment on first use, starts the
-app, and tells you to open <a href="http://localhost:8502">http://localhost:8502</a>. Ctrl-C disconnects; the app
-keeps running on the cluster.</p>
+<p>It forwards a port, creates the virtual environment on first use, starts the app
+<strong>detached</strong> and waits for it to answer, then drops you in a shell on the login
+node. Leaving that shell closes the tunnel; the app keeps running, and
+<code>kill $(cat logs/webapp.pid)</code> stops it.</p>
+<blockquote>
+<p>Expect roughly a minute before it answers on first start. The venv is ~8,500
+files on Lustre and a login node gives you one core, so <code>import streamlit</code>
+and <code>import pandas</code> alone account for about a minute of that.</p>
+</blockquote>
 <p>Manual equivalent, if you prefer:</p>
 <pre><code class="language-bash"># on the login node
 module load python/3.13.12-fasrc01
 uv venv webapp/.venv --python 3.13
 uv pip install --python webapp/.venv -r webapp/requirements.txt
-webapp/.venv/bin/streamlit run webapp/app.py --server.port 8502 --server.address 127.0.0.1
+setsid nohup bash -c 'echo $$ &gt; logs/webapp.pid
+    exec webapp/.venv/bin/streamlit run webapp/app.py \
+        --server.port 8502 --server.address 127.0.0.1 --server.headless true' \
+    &gt; logs/webapp.log 2&gt;&amp;1 &lt; /dev/null &amp;
 
 # on your laptop
 ssh -L 8502:localhost:8502 &lt;user&gt;@holylogin06.rc.fas.harvard.edu
 </code></pre>
+<p>Note the <code>setsid nohup … &amp;</code>. Started in the foreground the server takes SIGINT
+from Ctrl-C and SIGHUP when the connection drops, which looks exactly like a
+crash: the app disappears with nothing in the log.</p>
+<p>The pidfile is written from inside the detached process rather than from <code>$!</code>,
+because <code>setsid</code> forks when it needs a new session leader — <code>$!</code> would name a
+wrapper that has already exited, and <code>kill $(cat logs/webapp.pid)</code> would report
+"no such process" while the server carried on.</p>
 <hr />
-<h2 id="tab-1-launch">Tab 1 — Launch</h2>
+<h2 id="launch">Launch</h2>
 <p>Eight sections, exposing every parameter the pipeline accepts.</p>
 <ol>
 <li><strong>Target</strong> — pick from <code>targets/</code>, with residue count, MSA depth and whether
@@ -81,7 +113,55 @@ slowdown.</p>
 loss stops depending on the sequence — a believable loss with an exactly zero
 gradient.</p>
 <hr />
-<h2 id="tab-2-monitor">Tab 2 — Monitor</h2>
+<h2 id="pipeline">Pipeline</h2>
+<p>Build a multi-stage DAG — generate, hallucinate, merge, screen, optimize — and
+submit the whole thing. Nodes are submitted in topological order with
+<code>--dependency=afterok</code> on their upstream jobs, so SLURM does the waiting,
+fan-out and failure propagation. Each node's output directory is derived from
+its id, so downstream input paths are known at submit time even though the
+upstream jobs have not run yet.</p>
+<p>Per node you can set:</p>
+<ul>
+<li><strong>Type and id</strong>, at Add time.</li>
+<li><strong>Edges</strong> — a dropdown of upstream nodes whose output this type accepts, and
+  editable afterwards, not only when the node is created. An edge is legal iff
+  the source's <code>produces</code> is in the target's <code>accepts</code>, so "two validators off
+  one generator" or "merge several generators" express-or-reject as you build.</li>
+<li><strong>Params</strong> — the same catalog-driven forms the single-stage pages use: a
+  generate node offers every generator and its parameters, a screen node every
+  model plus the MPNN options, an optimize node a full design config imported
+  from Launch.</li>
+<li><strong>Resources</strong> — an optional per-node override of walltime, memory and CPUs.
+  The stages have genuinely different shapes (one diffusion pass versus hundreds
+  of gradient steps), so one pipeline-wide walltime either wastes allocation or
+  kills the long node. Blank means inherit.</li>
+<li><strong>Raw params (JSON)</strong> — the dict <code>pipeline_node.py</code> actually receives.</li>
+</ul>
+<h3 id="the-raw-params-editor">The raw params editor</h3>
+<p>Every node has one, and it is the point rather than an afterthought. A node's
+<code>params</code> is a plain dict passed verbatim to <code>pipeline_node.py</code>, so anything you
+could express by assigning to <code>node.params</code> in Python must be expressible here:
+keys no form draws, values outside a catalog's declared range, whole nested
+structures. Applying replaces the dict and resets that node's widgets so the
+forms redraw from what you wrote.</p>
+<p>The one exception is the <code>target_*</code> paths on generate and hallucinate nodes,
+which are re-derived from the node's Target selector on every rerun. Set those
+there.</p>
+<h3 id="ranges-are-advisory-not-load-bearing">Ranges are advisory, not load-bearing</h3>
+<p>The catalogs' <code>min</code>/<code>max</code> guard against typos. They are <strong>not</strong> a contract with
+your saved data: a run that really did generate 500 candidates per node produced
+a <code>node.json</code> that a form capping the field at 200 could not draw, and Streamlit
+raises rather than coerces in that situation. Forms now clamp and tell you what
+they did, so a stored value can never take the app down — but if the clamp is
+wrong, the number in <code>design_config.py</code> is what to change.</p>
+<h3 id="reopening-past-runs">Reopening past runs</h3>
+<p><code>submit()</code> writes each node's <code>{type, params, inputs}</code> to <code>node.json</code> under
+<code>&lt;workdir&gt;/pipelines/&lt;name&gt;/&lt;node&gt;/</code>, plus a <code>dag.json</code> and <code>jobids.json</code> for
+the run as a whole. <strong>Reopen a submitted pipeline</strong> reconstructs the graph from
+those shards, so a run can be reviewed, coloured by live SLURM state, or loaded
+back into the editor without having kept its DAG JSON.</p>
+<hr />
+<h2 id="monitor">Monitor</h2>
 <p>Queue table, progress across the array, log viewer, cancel — and the part that
 matters most, <strong>verification</strong>.</p>
 <p>Every failure mode this pipeline has produced was <em>silent</em>: the job completes,
@@ -96,7 +176,7 @@ the job <strong>says</strong> it did and shows it as pass/fail against what you 
 </ul>
 <p>The submit command is not evidence. The log is.</p>
 <hr />
-<h2 id="tab-3-results">Tab 3 — Results</h2>
+<h2 id="results">Results</h2>
 <p>Ranked designs with filtering by top-N or loss threshold, FASTA download, and
 statistics: loss distribution, spread across seeds, composition versus natural
 amino-acid frequencies, and mean pairwise identity.</p>
@@ -145,7 +225,7 @@ runnable without the app:</p>
 <tbody>
 <tr>
 <td><code>app.py</code></td>
-<td>bootstrap, sidebar, tab dispatch</td>
+<td>bootstrap, sidebar navigation, page dispatch, error boundary</td>
 </tr>
 <tr>
 <td><code>store.py</code></td>
@@ -156,8 +236,24 @@ runnable without the app:</p>
 <td>pure — sbatch / squeue / sacct / scancel, log verification</td>
 </tr>
 <tr>
+<td><code>pipeline.py</code></td>
+<td>pure — the DAG: node types, validation, topo order, submit</td>
+</tr>
+<tr>
+<td><code>session.py</code></td>
+<td>pure — projects (a named working directory)</td>
+</tr>
+<tr>
 <td><code>launch_tab.py</code></td>
 <td>Launch UI, generated from the catalogs</td>
+</tr>
+<tr>
+<td><code>generate_tab.py</code></td>
+<td>Generate UI — structure prediction and proposal sets</td>
+</tr>
+<tr>
+<td><code>pipeline_tab.py</code></td>
+<td>Pipeline UI — node editor and submit</td>
 </tr>
 <tr>
 <td><code>monitor_tab.py</code></td>
@@ -168,11 +264,35 @@ runnable without the app:</p>
 <td>Results UI</td>
 </tr>
 <tr>
+<td><code>docs_tab.py</code></td>
+<td>renders this file and its siblings in the browser</td>
+</tr>
+<tr>
+<td><code>ui_helpers.py</code></td>
+<td>shared widgets, including the range reconciliation above</td>
+</tr>
+<tr>
+<td><code>viewer.py</code></td>
+<td>py3Dmol structure views</td>
+</tr>
+<tr>
+<td><code>smoke_test.py</code></td>
+<td>headless checks — see below</td>
+</tr>
+<tr>
 <td><code>../design_config.py</code></td>
 <td>the catalogs and config builders (shared with <code>run_design.py</code>)</td>
 </tr>
 </tbody>
 </table>
+<h3 id="testing">Testing</h3>
+<pre><code class="language-bash">webapp/.venv/bin/python webapp/smoke_test.py
+</code></pre>
+<p>Runs the real app in-process via Streamlit's <code>AppTest</code>: every page renders, a
+saved pipeline reopens, a graph can be built and rewired, and an out-of-range
+stored value clamps and reports rather than raising. Exit code 0 means all four
+passed. Worth running before and after any change to the forms — two of those
+checks exist because the corresponding bugs reached a user.</p>
 <p><code>design_config.py</code> is importable <strong>without mosaic</strong>, so the app can build its UI
 host-side while <code>run_design.py</code> uses the same catalogs inside the container.
 Adding a loss term there makes it appear in the UI with no change to the app.</p></div></body></html>

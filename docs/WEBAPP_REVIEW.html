@@ -1,0 +1,1079 @@
+<!doctype html>
+<html lang='en'>
+<head>
+<meta charset='utf-8'>
+<title>mosaic webapp — login-node failure review</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>*,*::before,*::after{box-sizing:border-box}body{margin:0}img,svg{display:block;max-width:100%}</style>
+
+<style>
+  /* ---------------------------------------------------------------- tokens
+     Palette is lifted from the app's own Mermaid classDefs (pipeline.py:234-237)
+     so the report reads in the same colours the app already uses for job state. */
+  :root {
+    --ground:       #f4f6f8;
+    --panel:        #ffffff;
+    --panel-2:      #eceff3;
+    --ink:          #10161d;
+    --ink-2:        #47535f;
+    --ink-3:        #6f7d8a;
+    --rule:         #d3dae1;
+    --rule-strong:  #b3bec9;
+
+    --accent:       #2a78d6;   /* app: idle node   */
+    --ok:           #158f63;   /* app: done node   */
+    --warn:         #b47600;   /* app: running     */
+    --crit:         #cf3736;   /* app: failed      */
+
+    --ok-bg:        #e3f5ed;
+    --warn-bg:      #fbf1da;
+    --crit-bg:      #fbe6e6;
+    --accent-bg:    #e4eefb;
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+    --measure: 66ch;
+    --shell: 74rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:      #0d1319;
+      --panel:       #141c24;
+      --panel-2:     #1b242e;
+      --ink:         #e8edf2;
+      --ink-2:       #a8b6c2;
+      --ink-3:       #7c8a97;
+      --rule:        #263140;
+      --rule-strong: #38465a;
+
+      --accent:      #5c9df0;
+      --ok:          #35c491;
+      --warn:        #e0a53a;
+      --crit:        #f0706e;
+
+      --ok-bg:       #10281f;
+      --warn-bg:     #2b2110;
+      --crit-bg:     #2c1618;
+      --accent-bg:   #14243a;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0d1319;
+    --panel:       #141c24;
+    --panel-2:     #1b242e;
+    --ink:         #e8edf2;
+    --ink-2:       #a8b6c2;
+    --ink-3:       #7c8a97;
+    --rule:        #263140;
+    --rule-strong: #38465a;
+    --accent:      #5c9df0;
+    --ok:          #35c491;
+    --warn:        #e0a53a;
+    --crit:        #f0706e;
+    --ok-bg:       #10281f;
+    --warn-bg:     #2b2110;
+    --crit-bg:     #2c1618;
+    --accent-bg:   #14243a;
+  }
+
+  :root[data-theme="light"] {
+    --ground:      #f4f6f8;
+    --panel:       #ffffff;
+    --panel-2:     #eceff3;
+    --ink:         #10161d;
+    --ink-2:       #47535f;
+    --ink-3:       #6f7d8a;
+    --rule:        #d3dae1;
+    --rule-strong: #b3bec9;
+    --accent:      #2a78d6;
+    --ok:          #158f63;
+    --warn:        #b47600;
+    --crit:        #cf3736;
+    --ok-bg:       #e3f5ed;
+    --warn-bg:     #fbf1da;
+    --crit-bg:     #fbe6e6;
+    --accent-bg:   #e4eefb;
+  }
+
+  /* ---------------------------------------------------------------- base */
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: var(--shell);
+    margin: 0 auto;
+    padding: 3rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.5rem;
+  }
+
+  p, li { max-width: var(--measure); }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--panel-2);
+    padding: 0.1em 0.36em;
+    border-radius: 2px;
+    word-break: break-word;
+  }
+
+  /* --------------------------------------------------------------- header */
+  .masthead { display: flex; flex-direction: column; gap: 1.25rem; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(1.75rem, 4vw, 2.6rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.14;
+    text-wrap: balance;
+    margin: 0;
+    max-width: 22ch;
+  }
+
+  .standfirst {
+    font-size: 1.12rem;
+    line-height: 1.55;
+    color: var(--ink-2);
+    max-width: 60ch;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 2rem;
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    color: var(--ink-3);
+    border-top: 1px solid var(--rule);
+    padding-top: 1rem;
+  }
+  .meta span { white-space: nowrap; }
+  .meta b { color: var(--ink-2); font-weight: 500; }
+
+  /* -------------------------------------------------------------- section */
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    margin: 0;
+    padding-bottom: 0.7rem;
+    border-bottom: 2px solid var(--ink);
+    display: flex;
+    align-items: baseline;
+    gap: 0.85rem;
+  }
+  h2 .ord {
+    font-size: 0.72rem;
+    color: var(--ink-3);
+    font-weight: 400;
+    letter-spacing: 0.1em;
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: 1rem;
+    font-weight: 650;
+    margin: 0;
+    letter-spacing: -0.005em;
+  }
+
+  /* --------------------------------------------------------------- panels */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    padding: 1.4rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+
+  /* -------------------------------------------------------------- verdict */
+  .verdict {
+    background: var(--panel);
+    border: 1px solid var(--rule-strong);
+    border-top: 3px solid var(--crit);
+    padding: 1.6rem 1.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+  .verdict p { max-width: 68ch; margin: 0; }
+
+  /* --------------------------------------------------------------- chips */
+  .chip {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.22em 0.6em;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip.crit   { color: var(--crit); background: var(--crit-bg); }
+  .chip.warn   { color: var(--warn); background: var(--warn-bg); }
+  .chip.ok     { color: var(--ok);   background: var(--ok-bg); }
+  .chip.info   { color: var(--accent); background: var(--accent-bg); }
+
+  /* -------------------------------------------------------------- finding */
+  .findings { display: flex; flex-direction: column; gap: 1rem; }
+
+  .finding {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    padding: 1.25rem 1.4rem;
+    display: grid;
+    grid-template-columns: 3.4rem 1fr;
+    gap: 0.4rem 1.1rem;
+    align-items: start;
+  }
+  .finding .num {
+    font-family: var(--mono);
+    font-size: 1.5rem;
+    font-weight: 300;
+    color: var(--ink-3);
+    line-height: 1;
+    padding-top: 0.15rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .finding .head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem 0.8rem;
+  }
+  .finding .body { grid-column: 2; display: flex; flex-direction: column; gap: 0.7rem; }
+  .finding .body p { margin: 0; max-width: 68ch; }
+  .finding.is-crit { border-left: 3px solid var(--crit); }
+  .finding.is-warn { border-left: 3px solid var(--warn); }
+  .finding.is-info { border-left: 3px solid var(--accent); }
+
+  .where {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink-3);
+  }
+
+  /* ----------------------------------------------------------------- code */
+  pre {
+    background: var(--panel-2);
+    border: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.55;
+    padding: 0.95rem 1.1rem;
+    overflow-x: auto;
+    margin: 0;
+    tab-size: 2;
+  }
+  pre .hl  { color: var(--crit); font-weight: 600; }
+  pre .dim { color: var(--ink-3); }
+  pre .add { color: var(--ok); }
+
+  /* ---------------------------------------------------------------- table */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--rule); background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.87rem; min-width: 40rem; }
+  th, td { text-align: left; padding: 0.62rem 0.9rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+    background: var(--panel-2);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td code { background: none; padding: 0; }
+
+  /* --------------------------------------------------------------- metrics */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .metric {
+    background: var(--panel);
+    padding: 1rem 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .metric .k {
+    font-family: var(--mono);
+    font-size: 0.67rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .metric .v {
+    font-family: var(--mono);
+    font-size: 1.35rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .metric .n { font-size: 0.78rem; color: var(--ink-3); line-height: 1.4; }
+  .metric.is-crit .v { color: var(--crit); }
+  .metric.is-warn .v { color: var(--warn); }
+
+  /* ----------------------------------------------------------- module map */
+  .map { display: flex; flex-direction: column; gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+  .layer { background: var(--panel); padding: 1.1rem 1.2rem; display: grid; grid-template-columns: 8.5rem 1fr; gap: 1rem; }
+  .layer .lbl {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    padding-top: 0.35rem;
+  }
+  .mods { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .mod {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    background: var(--panel-2);
+    border: 1px solid var(--rule);
+    padding: 0.32em 0.6em;
+    display: flex;
+    align-items: baseline;
+    gap: 0.5em;
+  }
+  .mod .loc { color: var(--ink-3); font-size: 0.9em; font-variant-numeric: tabular-nums; }
+  .mod.flag { border-color: var(--crit); color: var(--crit); background: var(--crit-bg); }
+  .mod.flag .loc { color: var(--crit); opacity: 0.75; }
+
+  /* ---------------------------------------------------------------- steps */
+  ol.flow { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0; counter-reset: f; }
+  ol.flow li {
+    counter-increment: f;
+    display: grid;
+    grid-template-columns: 2.6rem 1fr;
+    gap: 1rem;
+    padding: 0.75rem 0;
+    border-bottom: 1px dashed var(--rule);
+    max-width: none;
+  }
+  ol.flow li:last-child { border-bottom: none; }
+  ol.flow li::before {
+    content: counter(f, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--ink-3);
+    font-variant-numeric: tabular-nums;
+    padding-top: 0.15rem;
+  }
+  ol.flow .txt { max-width: 66ch; }
+  ol.flow .cost {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--warn);
+    display: block;
+    margin-top: 0.2rem;
+  }
+
+  /* ------------------------------------------------------------ fix cards */
+  .tier { display: flex; flex-direction: column; gap: 0.9rem; }
+  .tier-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--rule-strong);
+    padding-bottom: 0.5rem;
+  }
+  .tier-head h3 { font-family: var(--mono); font-size: 0.92rem; font-weight: 600; }
+  .tier-head .goal { font-size: 0.85rem; color: var(--ink-3); }
+
+  .fix {
+    display: grid;
+    grid-template-columns: 1fr 7rem;
+    gap: 0.35rem 1.2rem;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    padding: 0.95rem 1.15rem;
+    align-items: start;
+  }
+  .fix .t { font-weight: 600; font-size: 0.94rem; }
+  .fix .effort {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--ink-3);
+    text-align: right;
+    grid-row: 1 / span 2;
+    grid-column: 2;
+    padding-top: 0.15rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .fix p { margin: 0; font-size: 0.9rem; color: var(--ink-2); max-width: 62ch; }
+
+  details.panel summary {
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--ink-2);
+    list-style-position: outside;
+  }
+  details.panel[open] summary { margin-bottom: 0.4rem; }
+
+  .note {
+    font-size: 0.85rem;
+    color: var(--ink-3);
+    border-left: 2px solid var(--rule-strong);
+    padding-left: 0.9rem;
+    max-width: 64ch;
+  }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink-3);
+  }
+
+  @media (max-width: 640px) {
+    .finding { grid-template-columns: 1fr; }
+    .finding .body { grid-column: 1; }
+    .finding .num { display: none; }
+    .layer { grid-template-columns: 1fr; }
+    .fix { grid-template-columns: 1fr; }
+    .fix .effort { grid-row: auto; grid-column: 1; text-align: left; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="shell">
+
+  <!-- ================================================== masthead -->
+  <header class="masthead">
+    <div class="eyebrow">Failure review · mosaic design webapp</div>
+    <h1>The app is not being killed. It is throwing.</h1>
+    <p class="standfirst">
+      The crash on <code>holylogin06</code> is an <strong>unhandled widget exception</strong>, not
+      FASRC's arbiter. A saved pipeline stores <code>num_designs: 500</code>; the form that draws it
+      caps the field at 200; Streamlit raises; and because all six tabs render on every rerun with no
+      error boundary, one out-of-range integer blanks the entire page. Two other problems are real but
+      separate — the launcher does not survive an SSH disconnect, and the login node holds you to a
+      hard 8&nbsp;GiB / 1-core budget shared across everything you run there.
+    </p>
+    <div class="meta">
+      <span><b>Repo</b> mosaic @ singularity-cluster</span>
+      <span><b>Commit</b> 8940bf1</span>
+      <span><b>Host</b> holylogin06.rc.fas.harvard.edu</span>
+      <span><b>Evidence</b> webapp/streamlit.log</span>
+      <span><b>Streamlit</b> 1.60.0 · Python 3.13</span>
+    </div>
+  </header>
+
+  <!-- ================================================== verdict -->
+  <div class="verdict">
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+      <span class="chip crit">Confirmed cause</span>
+      <span class="chip info">Reproducible from data on disk</span>
+    </div>
+    <p>
+      At <strong>12:39:00</strong> and again at <strong>12:40:39</strong> the app logged
+      <code>StreamlitValueAboveMaxError: The value 500 is greater than the max_value 200</code>,
+      raised from <code>ui_helpers.py:63</code> by way of the Pipeline tab's generate form. The
+      process had been up and healthy since 08:48. There is no OOM message, no signal, no truncated
+      log — the server kept running and served an exception page instead of the UI.
+    </p>
+    <p>
+      The 500 is not a typo. It is what the DIO3 campaign actually ran:
+      <code>pipelines/dio3_2way_500b/gen_boltzgen/node.json</code> and its Proteina sibling both
+      record <code>num_designs: 500</code>. Opening <em>Inspect a past pipeline → Load into editor</em>
+      pulls those params into a form whose catalog caps the field at 200. Because the loaded pipeline
+      lives in <code>st.session_state["pipeline"]</code>, every subsequent rerun re-raises: the app is
+      stuck until the browser session is reset.
+    </p>
+  </div>
+
+  <!-- ================================================== 1. the crash -->
+  <section>
+    <h2><span class="ord">01</span> The crash path, exactly</h2>
+
+    <ol class="flow">
+      <li><div class="txt">
+        <strong>The data.</strong> A pipeline node persists whatever it was submitted with.
+        <code>pipeline.submit()</code> writes <code>node.json</code> verbatim — there is no schema
+        check on the way out, and none on the way back in.
+      </div></li>
+      <li><div class="txt">
+        <strong>The reload.</strong> <code>Pipeline.from_run_dir()</code> reconstructs the DAG from
+        those shards and hands the raw <code>params</code> dict straight to the editor
+        (<code>pipeline.py:112</code>).
+      </div></li>
+      <li><div class="txt">
+        <strong>The mismatch.</strong> <code>_generate_form</code> calls
+        <code>params_block(…, dict(node.params))</code>, which passes the stored 500 as
+        <code>value=</code> while reading <code>max_value=</code> from
+        <code>design_config.GENERATIVE_MODELS["boltzgen"]["params"]["num_designs"]["max"] == 200</code>.
+      </div></li>
+      <li><div class="txt">
+        <strong>The throw.</strong> Streamlit validates <code>min ≤ value ≤ max</code> and raises.
+        Nothing between <code>ui_helpers.widget()</code> and <code>app.py</code> catches it.
+        <span class="cost">→ the exception escapes to the script runner, so the page renders a traceback instead of any tab</span>
+      </div></li>
+    </ol>
+
+    <pre><span class="dim">webapp/ui_helpers.py:57-67</span>
+
+def widget(key, name, spec, current):
+    t = spec["type"]
+    if t == "int":
+        return st.number_input(label,
+                               min_value=spec.get("min", 0),
+                               max_value=spec.get("max", 10000),   <span class="dim"># 200</span>
+                               <span class="hl">value=int(current …)</span>,             <span class="hl"># 500  ← raises</span>
+                               step=1, key=key, help=help_)</pre>
+
+    <p class="note">
+      Note the asymmetry that makes this a design flaw rather than bad luck: the bounds come from the
+      catalog, but the value comes from user data that the catalog never governed. Any code path that
+      can write a param — a submitted run, an uploaded DAG JSON, an edited config — can produce a
+      value the form refuses to draw.
+    </p>
+  </section>
+
+  <!-- ================================================== 2. all failure modes -->
+  <section>
+    <h2><span class="ord">02</span> Every failure mode found</h2>
+
+    <div class="findings">
+
+      <article class="finding is-crit">
+        <div class="num">1</div>
+        <div class="head">
+          <h3>Out-of-range persisted parameter takes down the whole app</h3>
+          <span class="chip crit">Confirmed</span>
+        </div>
+        <div class="body">
+          <p>
+            Covered above. The same shape exists in three more places that have not fired yet but
+            will: the optimize node caps soft steps at 300 while the Launch tab lets you set 500
+            (<code>OPTIMIZER_PARAMS["n_steps"]["max"]</code>), so importing a Launch config with
+            400 soft steps crashes identically; the hallucinate node caps
+            <code>num_designs</code> at 64; and <code>_screen_form</code> calls
+            <code>["boltz2","boltz1","af2","of3","protenix"].index(node.params["model"])</code>,
+            which raises a bare <code>ValueError</code> for any model string outside that list.
+          </p>
+          <div class="where">webapp/ui_helpers.py:63 · pipeline_tab.py:52, 90, 125, 155-158 · design_config.py:249, 278, 287</div>
+        </div>
+      </article>
+
+      <article class="finding is-crit">
+        <div class="num">2</div>
+        <div class="head">
+          <h3>No error boundary, and all six tabs execute on every rerun</h3>
+          <span class="chip crit">Confirmed</span>
+          <span class="chip warn">Amplifier</span>
+        </div>
+        <div class="body">
+          <p>
+            <code>st.tabs</code> is client-side only — the tab strip is CSS, but every
+            <code>with tab:</code> block runs server-side on every single rerun. So the Pipeline
+            tab's exception blanks Launch, Generate, Monitor, Results and Docs too, even though the
+            user was never looking at Pipeline. It also means each keystroke pays for all six tabs:
+            the target list, the SLURM queries, the file scans, the whole Launch form.
+          </p>
+          <p>
+            This is the single highest-leverage thing to change. It converts "one bad number bricks
+            the app" into "one tab shows an error", and cuts per-interaction work by roughly 6×.
+          </p>
+          <div class="where">webapp/app.py:126-145</div>
+        </div>
+      </article>
+
+      <article class="finding is-crit">
+        <div class="num">3</div>
+        <div class="head">
+          <h3>connect.sh runs the app in the SSH foreground — it dies on disconnect</h3>
+          <span class="chip crit">Confirmed</span>
+        </div>
+        <div class="body">
+          <p>
+            <code>connect.sh</code> tells you "Ctrl+C disconnects; the app keeps running on the
+            cluster." It does not. The script runs <code>ssh -t … "streamlit run …"</code> with the
+            server in the foreground of a TTY session, so Ctrl+C delivers SIGINT straight to
+            Streamlit and a dropped connection delivers SIGHUP. There is no
+            <code>nohup</code>, no <code>setsid</code>, and no <code>&amp;</code> anywhere in the
+            repo. Close the laptop, lose the app. <code>docs/WEBAPP.md:22</code> repeats the same
+            false claim.
+          </p>
+          <p>
+            This is very likely what "crashes when launched on the login node" feels like in normal
+            use — the app vanishes with nothing in the log, which is exactly the symptom
+            <code>singularity/webapp.sbatch:8-12</code> already warns about and attributes to the
+            arbiter.
+          </p>
+          <div class="where">webapp/connect.sh:22, 25-43 · docs/WEBAPP.md:22</div>
+        </div>
+      </article>
+
+      <article class="finding is-warn">
+        <div class="num">4</div>
+        <div class="head">
+          <h3>The login node caps you at 8&nbsp;GiB and one CPU core — for everything</h3>
+          <span class="chip warn">Environmental</span>
+        </div>
+        <div class="body">
+          <p>
+            The per-user cgroup on <code>holylogin06</code> is a hard limit shared by the webapp,
+            every SSH session, every editor and every shell command you run there. The kernel's own
+            counters show the ceiling is being hit constantly and has killed something once.
+          </p>
+          <div class="metrics">
+            <div class="metric"><span class="k">memory.max</span><span class="v">8 GiB</span><span class="n">per user, all processes</span></div>
+            <div class="metric"><span class="k">cpu.max</span><span class="v">1.0 core</span><span class="n">100000 / 100000 quota</span></div>
+            <div class="metric is-warn"><span class="k">memory.events max</span><span class="v">721,392</span><span class="n">times the limit forced reclaim</span></div>
+            <div class="metric is-crit"><span class="k">memory.events oom_kill</span><span class="v">1</span><span class="n">a process was killed</span></div>
+            <div class="metric"><span class="k">node load avg</span><span class="v">23.0</span><span class="n">69 users on the box</span></div>
+          </div>
+          <p>
+            The app itself is modest — 145&nbsp;MB resident after imports — so it is not the
+            direct cause of the OOM. But two unbounded process-lifetime dicts grow forever in a
+            long-lived session: <code>store._CACHE</code> keeps every campaign it has ever read, and
+            <code>viewer._HTML_CACHE</code> keeps whole inlined 3Dmol.js bundles keyed by structure
+            and hotspot set. Neither has an eviction policy.
+          </p>
+          <div class="where">/sys/fs/cgroup/user.slice/user-67509.slice/{memory.max,cpu.max,memory.events} · store.py:34 · viewer.py:73</div>
+        </div>
+      </article>
+
+      <article class="finding is-warn">
+        <div class="num">5</div>
+        <div class="head">
+          <h3>Cold start costs ~65 s of CPU-starved imports off Lustre</h3>
+          <span class="chip warn">Performance</span>
+        </div>
+        <div class="body">
+          <p>
+            The virtualenv is 450&nbsp;MB across 8,506 files on <code>/n/holylfs06</code>, a Lustre
+            filesystem. Importing it under a one-core quota on a loaded node is slow enough to read
+            as a hang:
+          </p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Import</th><th>Cumulative RSS</th><th>Time</th><th>Needed for</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>streamlit</code></td><td class="num">69.5 MB</td><td class="num">34.5 s</td><td>everything</td></tr>
+                <tr><td><code>pandas</code></td><td class="num">118.6 MB</td><td class="num">23.6 s</td><td>Altair charts, <code>st.dataframe</code></td></tr>
+                <tr><td><code>altair</code></td><td class="num">139.3 MB</td><td class="num">5.4 s</td><td>Results tab charts only</td></tr>
+                <tr><td><code>pyarrow</code>, <code>numpy</code></td><td class="num">139.3 MB</td><td class="num">&lt;0.1 s</td><td>pulled in by pandas</td></tr>
+                <tr><td><code>py3Dmol</code>, <code>gemmi</code>, <code>markdown</code></td><td class="num">144.7 MB</td><td class="num">1.3 s</td><td>3D viewer, Docs tab</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>
+            <code>pandas</code> alone is 36% of the startup cost and is used only to feed Altair and
+            <code>st.dataframe</code>. Every restart after a crash pays the full minute again.
+          </p>
+        </div>
+      </article>
+
+      <article class="finding is-info">
+        <div class="num">6</div>
+        <div class="head">
+          <h3>Eight SLURM subprocesses per rerun, none cached</h3>
+          <span class="chip info">Efficiency</span>
+        </div>
+        <div class="body">
+          <p>
+            <code>resource_picker()</code> shells out to <code>sacctmgr</code> and
+            <code>sinfo</code> every time it draws, and it is drawn three times per rerun (Generate,
+            Pipeline GPU, Pipeline CPU); the Launch tab calls both again directly; Monitor runs
+            <code>squeue</code>, <code>sacct</code> twice. Measured at ~0.1 s and ~0.04 s each, so
+            roughly 0.5–0.8 s of subprocess latency added to every widget interaction — plus load on
+            <code>slurmctld</code> from an idle browser tab.
+          </p>
+          <div class="where">ui_helpers.py:127-128 · launch_tab.py:352-353 · monitor_tab.py:27, 57, 72 · pipeline_tab.py:227, 289</div>
+        </div>
+      </article>
+
+      <article class="finding is-info">
+        <div class="num">7</div>
+        <div class="head">
+          <h3>Deprecated API past its stated removal date</h3>
+          <span class="chip info">Maintenance</span>
+        </div>
+        <div class="body">
+          <p>
+            The log is full of <code>use_container_width will be removed after 2025-12-31</code>.
+            It still works in Streamlit 1.60.0 but that date has passed; the next upgrade may turn
+            three warnings into three crashes. The call sites are the
+            <code>st.altair_chart(…, use_container_width=True)</code> lines in Results — everywhere
+            else already uses <code>width="stretch"</code>.
+          </p>
+          <div class="where">webapp/results_tab.py:147, 151, 154</div>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ================================================== 3. how it works -->
+  <section>
+    <h2><span class="ord">03</span> How the app is put together</h2>
+
+    <p>
+      The layout is deliberate and worth keeping: pure modules hold the logic and know nothing about
+      Streamlit, tab modules hold only UI, and <code>app.py</code> is bootstrap plus dispatch. Nothing
+      in the app imports <code>mosaic</code> or runs a model — it reads files and queues SLURM jobs.
+      2,931 lines total.
+    </p>
+
+    <div class="map">
+      <div class="layer">
+        <div class="lbl">Entry</div>
+        <div class="mods">
+          <span class="mod">app.py <span class="loc">145</span></span>
+          <span class="mod">connect.sh <span class="loc">45</span></span>
+          <span class="mod">singularity/webapp.sbatch <span class="loc">61</span></span>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="lbl">Pure logic<br>(no Streamlit)</div>
+        <div class="mods">
+          <span class="mod">store.py <span class="loc">352</span></span>
+          <span class="mod">cluster.py <span class="loc">224</span></span>
+          <span class="mod">pipeline.py <span class="loc">363</span></span>
+          <span class="mod">session.py <span class="loc">126</span></span>
+          <span class="mod">../design_config.py <span class="loc">catalogs</span></span>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="lbl">Tabs (UI)</div>
+        <div class="mods">
+          <span class="mod">launch_tab.py <span class="loc">424</span></span>
+          <span class="mod flag">pipeline_tab.py <span class="loc">319</span></span>
+          <span class="mod">generate_tab.py <span class="loc">283</span></span>
+          <span class="mod">results_tab.py <span class="loc">219</span></span>
+          <span class="mod">monitor_tab.py <span class="loc">98</span></span>
+          <span class="mod">docs_tab.py <span class="loc">97</span></span>
+        </div>
+      </div>
+      <div class="layer">
+        <div class="lbl">Shared</div>
+        <div class="mods">
+          <span class="mod flag">ui_helpers.py <span class="loc">154</span></span>
+          <span class="mod">viewer.py <span class="loc">110</span></span>
+          <span class="mod">mosaic_tokens.py <span class="loc">17</span></span>
+        </div>
+      </div>
+    </div>
+    <p class="note">Highlighted modules are where the confirmed crash lives.</p>
+
+    <h3 style="margin-top:1rem">What one click actually costs</h3>
+    <p>
+      Streamlit re-executes the whole script on every widget interaction. Because the tabs are
+      client-side, that means all of the following happens each time you type a character into any
+      field:
+    </p>
+    <ol class="flow">
+      <li><div class="txt">Session registry read from <code>~/.mosaic_webapp/sessions.json</code>, five working subdirectories <code>mkdir -p</code>'d.</div></li>
+      <li><div class="txt"><code>store.list_targets()</code> globs <code>targets/</code> and reads every FASTA and every <code>.a3m</code> to count unique rows — memoized on <code>(path, mtime, size)</code>, so this part is already cheap after the first pass.</div></li>
+      <li><div class="txt">All six tab bodies execute top to bottom.<span class="cost">→ Launch alone builds ~60 widgets across 10 sections</span></div></li>
+      <li><div class="txt">Eight <code>subprocess.run</code> calls to <code>sacctmgr</code>, <code>sinfo</code>, <code>squeue</code>, <code>sacct</code>.<span class="cost">→ ~0.5–0.8 s, uncached, every time</span></div></li>
+      <li><div class="txt"><code>store.list_campaigns()</code> and <code>list_screens()</code> scan <code>designs/</code> and <code>pipelines/*/*</code> — memoized on directory mtimes.</div></li>
+      <li><div class="txt">If the Pipeline tab holds a loaded DAG, every node's form is rebuilt from its stored params.<span class="cost">→ where the crash occurs</span></div></li>
+    </ol>
+
+    <p>
+      The caching work in the last two commits was the right instinct and is genuinely effective —
+      <code>store._CACHE</code> keys on <code>(mtime, size)</code> for files and on directory mtime
+      for listings, so a 1&nbsp;MB MSA is read once rather than on every keystroke. What it does not
+      address is that six tabs run when one is visible.
+    </p>
+  </section>
+
+  <!-- ================================================== 4. how it's launched -->
+  <section>
+    <h2><span class="ord">04</span> The two ways to launch it, and which is right</h2>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Route</th><th>Where it runs</th><th>Survives disconnect</th><th>Resource budget</th><th>Verdict</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>webapp/connect.sh</code><br><span class="where">what the docs tell you to use</span></td>
+            <td>Login node</td>
+            <td><span class="chip crit">No</span> — foreground of <code>ssh -t</code></td>
+            <td class="num">8 GiB / 1 core<br><span class="where">shared with all your shells</span></td>
+            <td>Broken as documented</td>
+          </tr>
+          <tr>
+            <td><code>sbatch singularity/webapp.sbatch</code><br><span class="where">already written, already correct</span></td>
+            <td>Compute node<br><code>kempner_interactive</code></td>
+            <td><span class="chip ok">Yes</span> — held by the job for 8 h</td>
+            <td class="num">8 GiB / 2 cores<br><span class="where">yours alone</span></td>
+            <td>Use this</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The batch route already exists and its header comment already explains exactly why it should be
+      preferred. It costs one extra SSH hop (<code>ssh -J</code> through the login node, printed for
+      you in the job's output) and gives you dedicated cores instead of a contended slice. The gap is
+      purely that <code>connect.sh</code> and <code>docs/WEBAPP.md</code> still point at the login
+      node — and that the job's 8-hour walltime silently ends the session, which is worth stating in
+      the docs rather than discovering.
+    </p>
+  </section>
+
+  <!-- ================================================== 5. the plan -->
+  <section>
+    <h2><span class="ord">05</span> What to change, in order</h2>
+
+    <div class="tier">
+      <div class="tier-head">
+        <h3>Tier 0 — stop the crash</h3>
+        <span class="goal">~30 lines. Fixes the reported problem outright.</span>
+      </div>
+
+      <div class="fix">
+        <div class="t">Clamp instead of raise, in one place</div>
+        <div class="effort">3 lines<br>ui_helpers.py</div>
+        <p>
+          In <code>widget()</code>, clamp <code>current</code> into <code>[min, max]</code> before
+          passing it to <code>number_input</code>, and emit an <code>st.caption</code> when it was
+          clamped so the user is told rather than silently corrected. This single change kills the
+          confirmed crash and two of the three latent ones.
+        </p>
+      </div>
+
+      <div class="fix">
+        <div class="t">Give every tab an error boundary</div>
+        <div class="effort">6 lines<br>app.py</div>
+        <p>
+          Wrap each <code>tab_module.render(...)</code> in <code>try / except Exception</code> and
+          show <code>st.exception(e)</code> inside that tab. A broken tab then costs you that tab,
+          not the app. Do this even after the clamp — it is the difference between a bug and an
+          outage.
+        </p>
+      </div>
+
+      <div class="fix">
+        <div class="t">Make the catalog caps match what you actually run</div>
+        <div class="effort">1 line<br>design_config.py</div>
+        <p>
+          <code>num_designs</code> is capped at 200 but the DIO3 run used 500 — the cap is simply
+          wrong. Raise it, and derive the Pipeline tab's hard-coded step limits (300 / 200 / 64) from
+          <code>OPTIMIZER_PARAMS</code> instead of restating them, so the two can never drift again.
+        </p>
+      </div>
+
+      <div class="fix">
+        <div class="t">Guard the <code>.index()</code> lookups</div>
+        <div class="effort">2 sites<br>pipeline_tab.py</div>
+        <p>
+          <code>_screen_form</code> and the generator selectbox both call <code>list.index()</code> on
+          a stored string. Fall back to index 0 when the value is not in the list, the way
+          <code>resource_picker</code> already does.
+        </p>
+      </div>
+    </div>
+
+    <div class="tier" style="margin-top:2rem">
+      <div class="tier-head">
+        <h3>Tier 1 — make it stay up</h3>
+        <span class="goal">Config and docs only. No app code.</span>
+      </div>
+
+      <div class="fix">
+        <div class="t">Switch the documented launch route to the batch job</div>
+        <div class="effort">docs +<br>connect.sh</div>
+        <p>
+          Point <code>docs/WEBAPP.md</code> and <code>connect.sh</code> at
+          <code>sbatch singularity/webapp.sbatch</code>. If you want to keep a login-node fallback,
+          it must be <code>setsid nohup … &amp;</code> with a pidfile — the current script's promise
+          that it survives Ctrl+C is false and should be deleted either way.
+        </p>
+      </div>
+
+      <div class="fix">
+        <div class="t">Bound the two unbounded caches</div>
+        <div class="effort">~10 lines<br>store.py, viewer.py</div>
+        <p>
+          Cap <code>store._CACHE</code> and <code>viewer._HTML_CACHE</code> — an LRU of a few dozen
+          entries is plenty. 3Dmol HTML blobs are megabytes each and currently accumulate for the
+          life of the process, against a budget you share with every other thing you run on that
+          node.
+        </p>
+      </div>
+    </div>
+
+    <div class="tier" style="margin-top:2rem">
+      <div class="tier-head">
+        <h3>Tier 2 — make it cheap</h3>
+        <span class="goal">This is where the simplification you asked about lives.</span>
+      </div>
+
+      <div class="fix">
+        <div class="t">Render one tab, not six</div>
+        <div class="effort">~15 lines<br>app.py</div>
+        <p>
+          Replace <code>st.tabs</code> with a sidebar <code>st.radio</code> and dispatch to a single
+          render function. Roughly 6× less work per interaction, all six SLURM-querying tabs stop
+          querying when you are not on them, and the blast radius of any future exception shrinks to
+          the visible tab. Highest payoff per line in this document.
+        </p>
+      </div>
+
+      <div class="fix">
+        <div class="t">Cache the cluster queries</div>
+        <div class="effort">2 decorators<br>cluster.py</div>
+        <p>
+          <code>accounts()</code> and <code>partitions()</code> change on the order of weeks. Wrap
+          them in <code>st.cache_data(ttl=3600)</code> at the call site (keeping
+          <code>cluster.py</code> Streamlit-free), or memoize with a timestamp inside the module.
+          Removes six subprocess spawns per rerun.
+        </p>
+      </div>
+
+      <div class="fix">
+        <div class="t">Consider dropping pandas</div>
+        <div class="effort">judgment call</div>
+        <p>
+          36% of a 65-second cold start, for three charts and some tables. Altair accepts a list of
+          dicts via <code>alt.Data(values=…)</code>, and <code>st.dataframe</code> will render a list
+          of dicts directly. Worth measuring before committing — but if restarts are frequent while
+          you iterate, this is the biggest single win available.
+        </p>
+      </div>
+
+      <div class="fix">
+        <div class="t">Simplify the Pipeline tab's forms</div>
+        <div class="effort">structural</div>
+        <p>
+          It is the newest and largest UI surface, it re-implements the Generate and Launch forms with
+          slightly different bounds, and it is the only tab that has crashed. The narrower version —
+          build DAGs by uploading or composing JSON, and keep the rich forms in Generate and Launch
+          where they already exist — would delete most of the duplicated bounds along with the class
+          of bug they cause. Worth deciding on before adding more node types.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================== appendix -->
+  <section>
+    <h2><span class="ord">06</span> Raw evidence</h2>
+
+    <details class="panel">
+      <summary>Traceback — webapp/streamlit.log, 2026-07-24 12:39:00</summary>
+      <pre>Uncaught app execution
+Traceback (most recent call last):
+  …/streamlit/runtime/scriptrunner/exec_code.py", line 129
+  File "…/webapp/app.py", line 136, in &lt;module&gt;
+    pipeline_tab.render(st.session_state[key])
+  File "…/webapp/pipeline_tab.py", line 275, in render
+    _generate_form(node, targets)
+  File "…/webapp/pipeline_tab.py", line 52, in _generate_form
+    p = params_block(f"{node.id}_gp", meta["params"], dict(node.params))
+  File "…/webapp/ui_helpers.py", line 113, in params_block
+    out[pname] = widget(f"{prefix}_{pname}", pname, params_spec[pname],
+                        current.get(pname, params_spec[pname].get("default")))
+  File "…/webapp/ui_helpers.py", line 63, in widget
+    return st.number_input(label, min_value=spec.get("min", 0),
+                           max_value=spec.get("max", 10000),
+                           value=int(current …), step=1, key=key, help=help_)
+<span class="hl">streamlit.errors.StreamlitValueAboveMaxError: The `value` 500 is greater than the `max_value` 200.</span></pre>
+    </details>
+
+    <details class="panel">
+      <summary>The offending data — pipelines/dio3_2way_500b/gen_boltzgen/node.json</summary>
+      <pre>{"type": "generate",
+ "params": {"generator": "boltzgen",
+            <span class="hl">"num_designs": 500,</span>          <span class="dim"># catalog max: 200</span>
+            "binder_length": 80,
+            "target_name": "dio3_ecd", …}}
+
+<span class="dim">gen_proteina/node.json carries the same 500.
+optimize/node.json: top_k 100, array 25, array_throttle 8  — all in range.
+screen/node.json:   model af2, recycling_steps 3           — all in range.</span></pre>
+    </details>
+
+    <details class="panel">
+      <summary>Login-node cgroup, measured on holylogin06</summary>
+      <pre>/sys/fs/cgroup/user.slice/user-67509.slice/
+  memory.max      8589934592        <span class="dim">= 8 GiB, per user, all processes</span>
+  memory.high     8589934592
+  cpu.max         100000 100000     <span class="dim">= 1.0 core</span>
+  memory.events   low 0
+                  high 137
+                  <span class="hl">max 721392</span>          <span class="dim">hit the ceiling, forced reclaim</span>
+                  oom 2
+                  <span class="hl">oom_kill 1</span>          <span class="dim">something was killed</span>
+
+uptime          load average: 22.98, 21.50, 20.63   <span class="dim">69 users</span>
+venv            450 MB / 8506 files on Lustre (/n/holylfs06)
+app RSS         144.7 MB after all imports</pre>
+    </details>
+
+    <details class="panel">
+      <summary>Latent range mismatches not yet triggered</summary>
+      <pre><span class="dim">field                    written by                  redrawn by            outcome</span>
+optimizer.soft.n_steps   launch_tab.py:328  1–500    pipeline_tab.py:155   <span class="hl">crash above 300</span>
+                                                     max 300
+optimizer.sharp.n_steps  launch_tab.py:328  1–500    pipeline_tab.py:157   <span class="hl">crash above 200</span>
+                                                     max 200
+hallucinate.num_designs  node.json, any value        pipeline_tab.py:90    <span class="hl">crash above 64</span>
+                                                     max 64
+screen.model             node.json, any string       pipeline_tab.py:125   <span class="hl">ValueError</span>
+                                                     list.index()</pre>
+    </details>
+  </section>
+
+  <footer>
+    Review of webapp/ at commit 8940bf1 · evidence gathered on holylogin06 · all line numbers
+    refer to the working tree as reviewed
+  </footer>
+
+</div>
+
+</body>
+</html>

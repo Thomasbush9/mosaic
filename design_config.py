@@ -246,7 +246,10 @@ GENERATIVE_MODELS: dict[str, dict[str, Any]] = {
                  "after a one-off ~50 s conditioning pass.",
         "needs_structure": True,
         "params": {
-            "num_designs": {"type": "int", "default": 8, "min": 1, "max": 200},
+            # Ceiling is a guard against a typo, not a statement about what is
+            # reasonable: the DIO3 funnel really did generate 500 per node, and
+            # a cap of 200 meant the app could not redraw its own saved run.
+            "num_designs": {"type": "int", "default": 8, "min": 1, "max": 5000},
             "binder_length": {"type": "int", "default": 80, "min": 20, "max": 200},
             "n_helices": {"type": "int", "default": 3, "min": 1, "max": 6,
                           "help": "three-helix bundle is the standard de novo "
@@ -275,12 +278,34 @@ GENERATIVE_MODELS: dict[str, dict[str, Any]] = {
         "needs_structure": True,
         "hotspots": True,
         "params": {
-            "num_designs": {"type": "int", "default": 8, "min": 1, "max": 200},
+            "num_designs": {"type": "int", "default": 8, "min": 1, "max": 5000},
             "binder_length": {"type": "int", "default": 80, "min": 20, "max": 200},
             "target_chain": {"type": "choice", "default": "A",
                              "options": list("ABCDEFGH")},
         },
     },
+}
+
+# Bounds for the knobs the pipeline's hallucinate node exposes. Declared here
+# next to every other catalog so the Pipeline tab reads its limits from one
+# place instead of restating them as literals — the drift between a Launch form
+# that allowed 500 optimizer steps and a pipeline form that capped them at 300
+# was itself a crash.
+HALLUCINATE_PARAMS: dict[str, dict[str, Any]] = {
+    "array": {"type": "int", "default": 1, "min": 1, "max": 512,
+              "help": "In-node fan-out: this many SLURM array tasks, one GPU "
+                      "each, run in parallel and each seeds off its array "
+                      "index. No extra node in the graph."},
+    "num_designs": {"type": "int", "default": 8, "min": 1, "max": 64,
+                    "help": "Trajectories vmapped within one GPU task, so this "
+                            "is bounded by GPU memory rather than by patience. "
+                            "Total hallucinated = array x this."},
+    "binder_length": {"type": "int", "default": 80, "min": 20, "max": 200},
+    "soft_steps": {"type": "int", "default": 60, "min": 1, "max": 500},
+    "sharp_steps": {"type": "int", "default": 25, "min": 1, "max": 500},
+    "array_throttle": {"type": "int", "default": 0, "min": 0, "max": 512,
+                       "help": "Max array tasks running at once. 0 lets SLURM "
+                               "decide."},
 }
 
 OPTIMIZER_PARAMS: dict[str, dict[str, Any]] = {
