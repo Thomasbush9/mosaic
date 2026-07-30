@@ -56,6 +56,11 @@ def main() -> int:
                         "not sequence (see predict_target.py)")
     ap.add_argument("--binder-length", type=int, default=80)
     ap.add_argument("--num-designs", type=int, default=8)
+    ap.add_argument("--n-helices", type=int, default=3,
+                   help="helices in the bundle; three is the standard de novo "
+                        "mini-binder topology")
+    ap.add_argument("--loop-length", type=int, default=4,
+                   help="residues in each inter-helix loop")
     ap.add_argument("--target-chain", default="A")
     ap.add_argument("--recycling-steps", type=int, default=3)
     ap.add_argument("--sampling-steps", type=int, default=300,
@@ -111,7 +116,7 @@ def main() -> int:
         include_block = "\n                res_index: " + P.as_res_index(pocket1)
         print(f"hotspots: {len(hot1)} residues -> pocket of {len(pocket1)} "
               f"within {a.hotspot_shell} A")
-    ss = helix_bundle_ss(a.binder_length)
+    ss = helix_bundle_ss(a.binder_length, a.n_helices, a.loop_length)
     print(f"binder {a.binder_length} aa, secondary structure:\n  {ss}")
 
     t0 = time.time()

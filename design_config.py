@@ -261,6 +261,11 @@ GENERATIVE_MODELS: dict[str, dict[str, Any]] = {
             "recycling_steps": {"type": "int", "default": 3, "min": 1, "max": 10},
             "target_chain": {"type": "choice", "default": "A",
                              "options": list("ABCDEFGH")},
+            "contact_cutoff": {"type": "float", "default": 8.0, "min": 3.0,
+                               "max": 20.0,
+                               "help": "heavy-atom distance defining an "
+                                       "interface contact when the epitope is "
+                                       "read back off the generated poses"},
             "hotspot_shell": {"type": "float", "default": 6.0, "min": 3.0,
                               "max": 20.0,
                               "help": "target residues within this distance of a "
@@ -282,6 +287,9 @@ GENERATIVE_MODELS: dict[str, dict[str, Any]] = {
             "binder_length": {"type": "int", "default": 80, "min": 20, "max": 200},
             "target_chain": {"type": "choice", "default": "A",
                              "options": list("ABCDEFGH")},
+            "chunk": {"type": "int", "default": 32, "min": 1, "max": 256,
+                      "help": "designs generated per forward pass — bounded by "
+                              "GPU memory, not by patience"},
         },
     },
 }

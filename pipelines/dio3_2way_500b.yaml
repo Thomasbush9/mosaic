@@ -1,0 +1,39 @@
+name: dio3_2way_500b
+target: dio3_ecd
+nodes:
+- id: gen_boltzgen
+  type: generate
+  generator: boltzgen
+  num_designs: 500
+- id: gen_proteina
+  type: generate
+  generator: proteina
+  num_designs: 500
+- id: pool
+  type: merge
+  inputs:
+  - gen_boltzgen
+  - gen_proteina
+- id: screen
+  type: screen
+  inputs:
+  - pool
+  recycling_steps: 3
+- id: optimize
+  type: optimize
+  inputs:
+  - screen
+  config:
+    models:
+    - af2
+    losses:
+    - BinderTargetContact
+    - WithinBinderContact
+    optimizer:
+      soft:
+        n_steps: 60
+    run:
+      batch: 4
+  top_k: 100
+  array: 25
+  array_throttle: 8

@@ -1,0 +1,28 @@
+# Proteina parameters for DIO3 ECD binders.
+#
+# The second generator in dio3_2gen.yaml. Proteina is a flow-matching backbone
+# generator on an independent lineage from BoltzGen, which is the point of
+# running both: two priors disagreeing is more informative than one prior
+# sampled twice.
+#
+# It emits CA-only backbones, so its sequences are less committed than
+# BoltzGen's — all the more reason for the gradient stage downstream.
+
+# Matched to the BoltzGen node: 64 + 64 = the 128 the optimize node consumes.
+num_designs: 64
+
+# Same length as the BoltzGen node, so the two halves of the pool are comparable
+# and a difference in outcome is attributable to the prior, not to size.
+binder_length: 75
+
+target_chain: A
+
+# Candidates per forward pass. Bounded by GPU memory, not patience.
+chunk: 32
+
+# Unlike BoltzGen, Proteina is HOTSPOT-CONDITIONED — telling it where to bind is
+# its distinguishing feature, and left empty it chooses for itself
+# (generate_proteina.py:91). Empty is the honest default until a site is chosen;
+# see the long note in boltzgen_dio3.yaml for the numbering, and set the same
+# residues in both presets so the two generators are aimed at one surface.
+hotspots: ""

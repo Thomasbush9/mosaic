@@ -21,4 +21,8 @@ numpy>=2
 # Docs tab (markdown -> HTML) and 3D structure views.
 markdown>=3.5
 py3Dmol>=2.0
+# pipeline_spec.py reads YAML pipeline files. Optional at run time — it falls
+# back to JSON with a clear message — but this venv is the interpreter the docs
+# tell you to run it with, so it belongs here.
+pyyaml>=6
 gemmi>=0.6          # chain identification for the 3D complex view

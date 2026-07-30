@@ -1,0 +1,53 @@
+# BoltzGen parameters for DIO3 ECD binders.
+#
+# Every knob generate_boltzgen.py accepts is listed, whether or not it differs
+# from the default, so this file is a complete statement rather than a patch.
+# Linked from dio3_2gen.yaml; see docs/PIPELINE_FILE.md.
+
+# 64 here + 64 from Proteina = a pool of 128, which is exactly what the optimize
+# node consumes (array 32 x batch 4). See the arithmetic in dio3_2gen.yaml —
+# generating more than that without a screen node to rank them just discards the
+# surplus.
+num_designs: 64
+
+# 75 rather than 80: shorter is easier to express and to fold, and a 3-helix
+# bundle needs ~24 residues per helix, which 75 still affords.
+binder_length: 75
+
+# Topology BoltzGen conditions on. 3 helices with 4-residue loops -> 21H/4L/22H/
+# 4L/20H over 75 residues, the standard de novo mini-binder.
+n_helices: 3
+loop_length: 4
+
+# Diffusion. 300 is what the worked example uses; step and noise scale are its
+# defaults and are the two knobs to reach for if designs come out either
+# uniformly similar (raise noise_scale) or physically strained (lower it).
+sampling_steps: 300
+step_scale: 2.0
+noise_scale: 0.88
+recycling_steps: 3
+
+# The DIO3 ECD is a single chain in targets/dio3_ecd.cif.
+target_chain: A
+
+# NO HOTSPOTS — deliberate, and the one decision this file cannot make for you.
+#
+# BoltzGen has no attractive hotspot term; hotspots work by CROPPING the target
+# to a pocket, so the binder has nowhere else to go. Left empty, BoltzGen picks
+# the surface itself, writes the epitope it chose into the node's manifest, and
+# pipeline_node.py feeds that epitope into the optimize stage's
+# BinderTargetContact automatically. So the funnel is coherent without a site
+# being specified: the generators choose, the optimizer aims at their choice.
+#
+# To aim at a chosen surface instead, set hotspots to 1-BASED ECD positions, not
+# UniProt numbering: the ECD is residues 68-304, so ECD 1 = R68 and UniProt N
+# is ECD N-67. Then calibrate the shell — on this 237-residue target a 6 A shell
+# keeps 21% of it, 8 A keeps 38%, 12 A keeps 69%, and a shell that keeps most of
+# the protein is not constraining anything.
+hotspots: ""
+hotspot_shell: 6.0
+
+# Heavy-atom distance that counts as a contact when the epitope is read back off
+# the generated poses. This is what ends up in the manifest, and therefore what
+# the optimize stage aims at, so it matters more here than its default suggests.
+contact_cutoff: 8.0

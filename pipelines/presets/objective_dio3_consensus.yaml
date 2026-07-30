@@ -1,0 +1,72 @@
+# The optimize node's objective: a two-model consensus over cheap losses.
+#
+# This is a design config — the same object the webapp's Launch tab builds and
+# writes to configs/, and the same one run_design.py --config takes. Linked from
+# dio3_2gen.yaml as `config:`. Anything omitted takes its default from
+# design_config.default_config().
+#
+# Cost, from design_config.estimate_seconds(): 1.7 h per array task at batch 4.
+# The two decisions that set that number are below.
+
+# Two independent lineages rather than one model sampled twice. AF2 is a genuine
+# second opinion — it agrees with Boltz-2 for different reasons — at ~2.2x the
+# cost of Boltz-2 alone (0.78 h -> 1.70 h per task). It runs SINGLE-SEQUENCE
+# whatever the target MSA says: its wrapper rejects MSAs (models/af2.py:391).
+# Weighted 0.5 so it moderates rather than co-drives.
+models:
+  - {name: boltz2, weight: 1.0, recycling_steps: 1, sampling_steps: 25}
+  - {name: af2, weight: 0.5, recycling_steps: 1}
+
+# EVERY term here is distogram-only — none reads the structure or confidence
+# module. That is not an aesthetic choice: under JIT, JAX prunes those modules
+# when nothing reads them, and adding a single confidence term (pLDDT, PAE,
+# ipTM) or any ProteinMPNN term defeats the pruning and takes this from 1.7 h to
+# 5.0 h per task. Judge confidence in a separate screen instead, where it is
+# paid once per candidate rather than once per gradient step.
+losses:
+  # Pull the binder onto the target. epitope_idx is left unset ON PURPOSE:
+  # pipeline_node.py reads the epitope the upstream generator chose out of the
+  # merged manifest and injects it here at run time, so the optimizer aims at
+  # the surface the generators actually engaged.
+  - {name: BinderTargetContact, weight: 4.0, contact_distance: 20.0}
+  # Keep the binder folded rather than sprawling across the surface.
+  - {name: WithinBinderContact, weight: 1.0}
+  # Both generators propose helical bundles; keep the gradient stage from
+  # dissolving that topology.
+  - {name: HelixLoss, weight: 1.0}
+  # Compactness, read off the distogram. Cheap, and the standard guard against
+  # a binder that satisfies contact by stretching.
+  - {name: DistogramRadiusOfGyration, weight: 1.0}
+
+# Is this a plausible protein at all? Clipped, because a raw pseudo-likelihood
+# optimizes to homopolymers — the most common footgun in this codebase.
+sequence_models:
+  - {name: esmc, weight: 0.5, checkpoint: biohub/ESMC-300M,
+     clip_lower: 2.0, clip_upper: 100.0}
+
+# No ProteinMPNN terms: it scores sequence against predicted backbone
+# coordinates, so it needs the structure module and carries the same 3x penalty
+# as a confidence loss. It belongs in a screen node (inverse_fold: true), where
+# it costs one pass per candidate.
+mpnn:
+  weights: soluble
+  backbone_noise: 0.0
+  terms: []
+
+binder:
+  length: 75              # must match the generators' binder_length
+  no_cys: true            # the target already carries a U170C; no new cysteines
+  init_noise: 0.15        # init_fasta comes from upstream, not from here
+
+# Two stages: a long soft stage over the relaxed simplex, then a short sharp one
+# to commit. 120 is a real refinement of a proposal rather than a nudge; the
+# earlier dio3 run used 60.
+optimizer:
+  soft:  {n_steps: 120, stepsize: 0.1, momentum: 0.9, scale: 1.0, logspace: false}
+  sharp: {n_steps: 30, stepsize: 0.025, momentum: 0.5, scale: 2.0, logspace: false}
+
+# 4 trajectories vmapped per GPU task. With array 32 on the node, 32 x 4 = 128
+# candidates — the whole pool. run_design.py:316 gives task i the window
+# [i*batch, (i+1)*batch) of the seed FASTA.
+run:
+  batch: 4

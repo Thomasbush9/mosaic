@@ -163,6 +163,20 @@ raises rather than coerces in that situation. Forms now clamp and tell you what
 they did, so a stored value can never take the app down — but if the clamp is
 wrong, the number in `design_config.py` is what to change.
 
+### The same pipeline, as a file
+
+The tab is one of two front ends over `webapp/pipeline.py`. The other is
+`pipeline_spec.py`, which reads a small YAML (or JSON) file and submits the same
+DAG from a shell — no browser, no tunnel, no login-node process to survive:
+
+```bash
+webapp/.venv/bin/python pipeline_spec.py submit pipelines/dio3.yaml
+```
+
+They meet in both directions: `export` turns a submitted run into an editable
+spec file, `json` turns a spec file into a DAG this tab loads. See
+**Pipelines as files** in the Docs tab, or `docs/PIPELINE_FILE.md`.
+
 ### Reopening past runs
 
 `submit()` writes each node's `{type, params, inputs}` to `node.json` under
@@ -263,6 +277,7 @@ Following ProtForge: pure logic separate from UI, so it can be tested and reused
 | `viewer.py` | py3Dmol structure views |
 | `smoke_test.py` | headless checks — see below |
 | `../design_config.py` | the catalogs and config builders (shared with `run_design.py`) |
+| `../pipeline_spec.py` | pure — the file front end over `pipeline.py`, and its CLI |
 
 ### Testing
 

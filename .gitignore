@@ -21,3 +21,8 @@ logs/
 # webapp virtualenv (created on first run by webapp/connect.sh)
 webapp/.venv/
 webapp/streamlit.log
+
+# Editor swap files. These have twice been picked up by `git add -A` while a
+# file was open in vim.
+*.swp
+*.swo

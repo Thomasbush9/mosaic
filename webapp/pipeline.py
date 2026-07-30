@@ -308,6 +308,29 @@ def _out_dir(root: Path, p: Pipeline, n: Node) -> Path:
     return root / "pipelines" / p.name / n.id
 
 
+def node_resources(n: Node, *, gpu_res: dict | None = None,
+                   cpu_res: dict | None = None) -> dict:
+    """Walltime, memory and CPUs for one node, resolved in three layers.
+
+    The built-in default for the node's kind, then the pipeline-wide setting,
+    then the node's own `params["resources"]`. The per-node layer exists because
+    the stages have genuinely different shapes — a generate node is one diffusion
+    pass, an optimize node is hundreds of gradient steps — so a single pipeline
+    walltime either wastes allocation or kills the long node.
+
+    Exposed rather than inlined in submit() so a dry run can print exactly what
+    a real submit would ask for, instead of a second copy of the same rules.
+    """
+    gpu = NODE_TYPES.get(n.type, {}).get("gpu", True)
+    res = {"cpus": 8, "mem": "96G", "time_limit": "06:00:00"} if gpu \
+        else {"cpus": 2, "mem": "16G", "time_limit": "01:00:00"}
+    for layer in ((gpu_res if gpu else cpu_res) or {},
+                  n.params.get("resources") or {}):
+        res.update({k: v for k, v in layer.items()
+                    if k in ("cpus", "mem", "time_limit") and v})
+    return res
+
+
 def submit(p: Pipeline, *, repo: Path, workdir: Path, account: str,
            gpu_partition: str, cpu_partition: str,
            gpu_res: dict | None = None,
@@ -344,18 +367,7 @@ def submit(p: Pipeline, *, repo: Path, workdir: Path, account: str,
         cmd = ["sbatch", "--parsable",
                f"--job-name=pipe-{p.name}-{n.id}",
                f"--account={account}", f"--partition={part}"]
-        # Resources resolve in three layers: the built-in default for the node's
-        # kind, the pipeline-wide setting from the UI, then the node's own
-        # `params["resources"]`. The per-node layer exists because the stages
-        # have genuinely different shapes — a generate node is one diffusion
-        # pass, an optimize node is hundreds of gradient steps — so a single
-        # pipeline walltime either wastes allocation or kills the long node.
-        res = {"cpus": 8, "mem": "96G", "time_limit": "06:00:00"} if spec["gpu"] \
-            else {"cpus": 2, "mem": "16G", "time_limit": "01:00:00"}
-        for layer in ((gpu_res if spec["gpu"] else cpu_res) or {},
-                      n.params.get("resources") or {}):
-            res.update({k: v for k, v in layer.items()
-                        if k in ("cpus", "mem", "time_limit") and v})
+        res = node_resources(n, gpu_res=gpu_res, cpu_res=cpu_res)
         if spec["gpu"]:
             cmd.append("--gres=gpu:1")
         cmd += [f"--cpus-per-task={res['cpus']}",

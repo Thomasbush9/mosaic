@@ -43,8 +43,8 @@ def show_selection(sequence: str, positions: list[int], label: str) -> None:
     """Echo the actual residues chosen.
 
     This exists because the indices are easy to get wrong in a way nothing else
-    would catch: a trimmed target renumbers everything (DIO3's ECD starts at
-    global residue 68, so ECD position 1 is K68), and a silently wrong epitope
+    would catch: a trimmed target renumbers everything (DIO3's ECD is residues
+    68-304, so ECD position 1 is R68), and a silently wrong epitope
     produces a perfectly plausible campaign aimed at the wrong surface.
     """
     if not positions:

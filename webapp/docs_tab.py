@@ -17,6 +17,8 @@ DOCS = [
     ("Manual", "MANUAL.md", "How to run a campaign, start to finish"),
     ("Models", "MODELS.md", "What each model is, and every parameter"),
     ("Webapp", "WEBAPP.md", "This app, tab by tab"),
+    ("Pipelines as files", "PIPELINE_FILE.md",
+     "The same DAG, defined in a file and submitted from a shell"),
 ]
 
 CSS = """

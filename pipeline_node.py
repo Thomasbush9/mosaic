@@ -73,7 +73,29 @@ def main() -> int:
                 "--target-name", params.get("target_name", ""),
                 "--binder-length", str(params.get("binder_length", 80)),
                 "--num-designs", str(params.get("num_designs", 8)),
+                "--seed", str(task_seed),
                 "--out", str(node_dir)]
+        # The generator's own knobs. The UI has always drawn these and a spec
+        # file can set them, but none of them used to reach the stage script: a
+        # node asking for 600 sampling steps ran the default 300 and said
+        # nothing about it. This table is the honest statement of what a
+        # generate node forwards — only flags the chosen script actually
+        # accepts, since an unknown one is an argparse error at run time.
+        FORWARD = {
+            "boltzgen": {"target_chain": "--target-chain",
+                         "n_helices": "--n-helices",
+                         "loop_length": "--loop-length",
+                         "recycling_steps": "--recycling-steps",
+                         "sampling_steps": "--sampling-steps",
+                         "step_scale": "--step-scale",
+                         "noise_scale": "--noise-scale",
+                         "contact_cutoff": "--contact-cutoff"},
+            "proteina": {"target_chain": "--target-chain",
+                         "chunk": "--chunk"},
+        }
+        for key, flag in FORWARD.get(gen, {}).items():
+            if params.get(key) is not None:
+                args += [flag, str(params[key])]
         if params.get("hotspots"):
             args += ["--hotspots", params["hotspots"]]
             if gen == "boltzgen":
@@ -177,10 +199,11 @@ def main() -> int:
                 l.setdefault("params", {})["epitope_idx"] = ep
         cfg_path = node_dir / "config.json"
         cfg_path.write_text(json.dumps(cfg, indent=2))
-        n_tasks = int(params.get("array", 1))
-        # Optimize itself may be an array; here we run the single-task form and
-        # let the pipeline node be the unit. (Array fan-out within a node is a
-        # future extension.)
+        # One array task's share of the work. Fan-out is the submitter's job
+        # (params["array"] becomes --array), so all that is needed here is to
+        # run with this task's seed: run_design offsets seed*batch into the seed
+        # FASTA, so each task refines a different window of the top-K and writes
+        # its own designs_seed<i>.json.
         _exec([str(REPO / "run_design.py"), "--config", str(cfg_path),
                "--target", cfg["target"]["fasta"], "--seed", str(task_seed),
                "--out", str(node_dir)])

@@ -1,0 +1,118 @@
+# DIO3 ECD binders: two generators -> one pool -> gradient refinement.
+#
+#   BoltzGen  64 ─┐
+#                 ├─ merge (128) ─→ optimize (32 GPUs x batch 4 = 128)
+#   Proteina  64 ─┘
+#
+#   PY=webapp/.venv/bin/python
+#   $PY pipeline_spec.py show   pipelines/dio3_2gen.yaml --params
+#   $PY pipeline_spec.py submit pipelines/dio3_2gen.yaml --dry-run
+#   $PY pipeline_spec.py submit pipelines/dio3_2gen.yaml
+#
+# Each node's parameters live in presets/, linked below. That is worth the
+# indirection here because the two generator presets are the kind of thing you
+# tune once and reuse, and because the objective is the same object the Launch
+# tab writes to configs/. The graph itself stays readable at this size — see
+# docs/PIPELINE_FILE.md on when NOT to split.
+#
+# WHY TWO GENERATORS. BoltzGen diffuses backbones against target geometry and
+# reads residues off sidechains; Proteina is flow-matching and emits CA-only
+# backbones. Independent priors, so a candidate both produce is more interesting
+# than one either produces twice. Merging them means a single downstream stage
+# judges both on the same terms.
+#
+# WHY THE NUMBERS AGREE. run_design.py:316 gives array task i the seed-FASTA
+# window [i*batch, (i+1)*batch), cycling if the pool is short. So the optimize
+# node consumes exactly array x batch = 32 x 4 = 128 candidates. Generating more
+# than 128 without a screen node to RANK them would discard the surplus in
+# arbitrary (generator) order, and generating fewer would refine some twice. 64
+# + 64 = 128 is the coherent choice. Raising throughput means raising all three
+# together, or inserting a screen — see the block at the foot of this file.
+
+name: dio3_2gen
+
+# targets/dio3_ecd.fasta + .cif, msa/dio3_ecd.a3m.
+# The ECD is residues 68-304 of DIO3 (237 aa) with the catalytic Sec replaced:
+# U170C. MSA depth 3399, which Boltz-2 uses and AF2 does not.
+target: dio3_ecd
+
+cluster:
+  account: kempner_bsabatini_lab
+  gpu_partition: kempner_h100
+  cpu_partition: kempner_interactive
+  # Fallbacks. Every GPU node below overrides the walltime, because the three
+  # stages differ by an order of magnitude and one pipeline-wide number would
+  # either waste the allocation or kill the long node.
+  gpu: {time_limit: "02:00:00", mem: 96G, cpus: 8}
+  cpu: {time_limit: "00:30:00", mem: 16G, cpus: 2}
+
+nodes:
+  # ---- generation: two independent priors, same target, same binder length ----
+
+  - id: gen_boltzgen
+    type: generate
+    generator: boltzgen
+    params_file: presets/boltzgen_dio3.yaml
+    # ~2.5 s per design after a one-off ~50 s conditioning pass, so 64 designs is
+    # minutes. The hour is for the first-call JIT compile.
+    resources: {time_limit: "01:30:00"}
+
+  - id: gen_proteina
+    type: generate
+    generator: proteina
+    params_file: presets/proteina_dio3.yaml
+    resources: {time_limit: "01:30:00"}
+
+  # ---- fan-in: one pool, so one objective judges both priors identically ----
+
+  - id: pool
+    type: merge
+    inputs: [gen_boltzgen, gen_proteina]
+    # CPU only — this concatenates manifests and FASTAs.
+    resources: {time_limit: "00:20:00", mem: 8G, cpus: 2}
+
+  # ---- gradient refinement under the multi-objective loss ----
+
+  - id: optimize
+    type: optimize
+    inputs: [pool]
+    config: presets/objective_dio3_consensus.yaml
+
+    # 32 array tasks, one GPU each, 8 at a time so this does not monopolise the
+    # partition. Each task refines a different window of the pool.
+    array: 32
+    array_throttle: 8
+
+    # top_k: 0 — take the WHOLE pool, deliberately. top_k truncates the seed
+    # FASTA from the front, which is only meaningful when something upstream has
+    # ranked it best-first. A merge node has not: its order is
+    # "BoltzGen's, then Proteina's". Truncating here would silently mean "the
+    # first 100 BoltzGen designs", not "the best 100".
+    top_k: 0
+
+    # 1.7 h estimated per task (design_config.estimate_seconds, batch 4,
+    # two models, distogram-only losses). 4 h leaves room for the JIT compile
+    # and for a slow node without risking a walltime kill 90% of the way in.
+    resources: {time_limit: "04:00:00", mem: 128G, cpus: 8}
+
+# ---------------------------------------------------------------------------
+# TO ADD A SCREEN between the pool and the optimizer — recommended once you want
+# to generate more than you can refine, since it makes top_k mean "the best":
+#
+#   - id: screen
+#     type: screen
+#     inputs: [pool]
+#     model: of3            # a THIRD lineage: neither generator, nor the judge
+#     recycling_steps: 3
+#     inverse_fold: true    # ProteinMPNN, paid once per candidate here
+#     use_msa: true
+#     resources: {time_limit: "03:00:00"}
+#
+# then point the optimizer at it and let the funnel narrow:
+#
+#     inputs: [screen]
+#     top_k: 128            # now genuinely the best 128, screened.fasta is ranked
+#
+# and raise both generators to num_designs: 500 in their presets. That is the
+# shape of the earlier dio3_2way_500b run.
+# ---------------------------------------------------------------------------
