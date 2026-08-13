@@ -21,6 +21,9 @@ Several deps are git-sourced sister repos under `escalante-bio/*` and `nboyd/jol
 
 ## Big-picture architecture
 
+`docs/CODE_TOUR.md` is a reading guide to `src/mosaic` — which files carry the
+core abstractions, which backend to trace end-to-end first, and what to skip.
+
 The whole framework is built around two abstractions in `src/mosaic/common.py`:
 
 - **`LossTerm`** (eqx.Module): a JIT-compatible callable pytree with signature `(soft_sequence: [N,20], *, key) -> (scalar, aux_dict)`.

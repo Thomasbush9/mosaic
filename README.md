@@ -594,6 +594,7 @@ killed by the arbiter at the `mksquashfs` step).
 | [docs/MANUAL.md](docs/MANUAL.md) | Running campaigns, written for bench scientists |
 | [docs/MODELS.md](docs/MODELS.md) | Each model, and every parameter |
 | [docs/WEBAPP.md](docs/WEBAPP.md) | The app, tab by tab |
+| [docs/CODE_TOUR.md](docs/CODE_TOUR.md) | Reading `src/mosaic`, for people modifying the library |
 
 HTML versions live beside them (`docs/*.html`) and render inside the app's Docs
 tab.

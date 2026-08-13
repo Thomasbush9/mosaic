@@ -261,6 +261,7 @@ class ESMFoldInterContact(LossTerm):
         return loss, {"esmfold_inter_contact": loss}
 
 
+#TODO: try to create a loss with clip in it
 class BinderTargetContact(LossTerm):
     paratope_idx: list[int] | None = None
     paratope_size: int | None = None
@@ -502,6 +503,7 @@ class IPTMLoss(LossTerm):
         return -iptm, {"iptm": iptm}
 
 
+#TODO: check if you can add spec, for hotspot
 class DistogramIPTMProxy(LossTerm):
     """Distogram iPTM proxy (Algorithm 15, ESM2 paper supplement A.3.3).
 
@@ -523,6 +525,7 @@ class DistogramIPTMProxy(LossTerm):
     """
 
     contact_distance: float = 8.0
+    epitope_idx: list[int] | None = None
 
     def __call__(
         self,
@@ -540,7 +543,10 @@ class DistogramIPTMProxy(LossTerm):
         log_p_full = jax.nn.log_softmax(D_bt, axis=-1)
         p_cut = jax.nn.softmax(D_bt, axis=-1, where=m_b)
         S = -(p_cut * log_p_full).sum(axis=-1)  # [N, L-N]
-
+        
+        # Focus only on specific epitope residues if provided: 
+        if self.epitope_idx is not None:
+            S = S[:, jnp.array(self.epitope_idx)]
         # Mean of the k = binder_len smallest pair scores.
         S_flat = S.reshape(-1)
         bottom_k = -jax.lax.top_k(-S_flat, k=binder_len)[0]
