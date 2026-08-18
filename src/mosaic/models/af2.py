@@ -306,7 +306,10 @@ def af2_atom_positions(chain: gemmi.Chain) -> tuple[np.ndarray, np.ndarray]:
 
 
 def make_af_features(chains: list[TargetChain]) -> dict[str, jax.Array]:
-    assert all(not c.use_msa for c in chains), "AF2 interface does not support MSAs"
+
+    # get msa features per chain: 
+
+
 
     # check for missing residues in template chains
     for c in chains:
