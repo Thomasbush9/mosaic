@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 tags/
+tags
 tag/*
 tag/
 __marimo__/
