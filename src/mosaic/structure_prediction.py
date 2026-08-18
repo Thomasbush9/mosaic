@@ -97,5 +97,3 @@ class StructurePredictionModel(eqx.Module):
     @abstractmethod
     def build_loss(self, *, loss: LossTerm | LinearCombination, features: PyTree,  recycling_steps: int = 1, sampling_steps: int | None = None,) -> LossTerm:
         pass
-
-
