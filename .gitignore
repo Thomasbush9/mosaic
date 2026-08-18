@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 tags/
+tag/*
+tag/
+__marimo__/
 # Virtual environments
 .venv
 

@@ -8,6 +8,8 @@ weight caches, and checks the environment before a job wastes a GPU allocation.
 | --- | --- |
 | `mosaic.def` | Singularity definition. Code + dependencies, no weights. |
 | `mosaic-exec.sh` | Runs a command in the container with the caches bound in. |
+| `marimo.sh` | Notebook server in the container on a GPU node, over an ssh tunnel. |
+| `marimo.sbatch` | Same, as a batch job that holds the node for its walltime. |
 | `design.sbatch` | Job-array template for a design sweep. |
 | `selftest.py` | Environment check. Runs at build time and on a compute node. |
 
@@ -104,6 +106,49 @@ A cache whose source directory is absent is **skipped rather than mounted
 empty**, so mosaic falls back to downloading it. `selftest.py` flags the
 opposite case — a mount point that exists but is empty, meaning a bind silently
 did not happen and mosaic is about to re-download tens of GB into scratch.
+
+## Interactive notebooks
+
+The examples are marimo notebooks, and interactive is the intended way to work
+with mosaic — JIT warmup is minutes, so you want one process you keep. Two hops:
+
+```bash
+# 1. on a login node — get a GPU node
+salloc -p kempner_h100 -A kempner_bsabatini_lab --gres=gpu:1 \
+       -c 8 --mem=128G -t 6:00:00
+
+# 2. in the allocation's shell — start the server in the container
+cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/mosaic
+./singularity/marimo.sh examples/example_notebook.py
+```
+
+It prints the `ssh -J … -L …` command to run on your laptop and the URL with the
+access token. `sbatch singularity/marimo.sbatch` does the same as a batch job,
+which survives a dropped tunnel — reconnect with the same ssh command.
+
+Nothing special happens for the caches: the wrapper is `mosaic-exec.sh`, so a
+notebook sees exactly the binds a campaign task sees and downloads nothing. Three
+notebook-specific details:
+
+- **Edit the repo copy, not the image's.** `/opt/mosaic/examples` is read-only, so
+  marimo cannot save there. `/n/holylfs06` is auto-bound and writable, and
+  `marimo.sh` resolves relative paths against the repo root and refuses
+  `/opt/mosaic/...`.
+- **`MOSAIC_DEV_SRC=$PWD/src`** binds the working tree over the image's
+  `src/mosaic`, so editing a loss and restarting the kernel is seconds instead of
+  a ~10 min rebuild. This is the one place that trade is clearly worth it.
+- **`JAX_COMPILATION_CACHE_DIR=/jax_cache`** is exported for you, so a kernel
+  restart reuses compiled kernels — including ones a batch campaign compiled.
+
+Why not `kempner_interactive`: it has GPUs, but they are 20 GB A100 MIG slices.
+Small Boltz/AF2 work fits; ESM-C 6B (24 GB of weights before activations) does
+not. Why not a login node: a marimo server is exactly the long-lived
+CPU-accumulating process FASRC's arbiter kills, so `marimo.sh` refuses to start
+without an allocation.
+
+The container HOME lives on netscratch, so marimo's own settings under
+`~/.config/marimo` are subject to the scratch retention policy. Notebooks
+themselves are in the repo on holylfs06 and are not.
 
 ## Submitting a sweep
 

@@ -63,7 +63,7 @@ def boltz_to_esmc_matrix(vocab: dict[str, int]) -> np.ndarray:
         T[i, vocab[tok]] = 1.0
     return T
 
-
+#TODO: make loss work in batch for re-ranks?
 class ESMCPseudoLikelihood(LossTerm):
     """Pseudo-likelihood for the ESM-C masked language model.
 
