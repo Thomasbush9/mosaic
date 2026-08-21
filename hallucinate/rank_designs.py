@@ -32,16 +32,25 @@ def _(DESIGN_PATH, pd, re):
     # now we create a df for each design vs. custom loss function: 
     d0 = DESIGN_PATH / "designs_0.txt"
     designs = {}
+    i = 0
     for d in DESIGN_PATH.iterdir():
         with open(d, "r") as f:
             data =[re.sub(r'[>\n]', '', text) for text in f.readlines()]
             loss = data[::2]
             sequences = data[1::2]
             # filters already not unique sequences
-            for i, (l, seq) in enumerate(zip(loss, sequences)):
+            for l, seq in zip(loss, sequences):
                 designs[i] = {"seq":seq, "loss":float(l)}
+                i += 1
     designs = pd.DataFrame.from_dict(designs, orient="index")
+    
     return (designs,)
+
+
+@app.cell
+def _(designs):
+    designs
+    return
 
 
 @app.cell
@@ -52,12 +61,19 @@ def _():
     from mosaic.losses.protein_mpnn import InverseFoldingSequenceRecovery
     from mosaic.proteinmpnn.mpnn import load_mpnn_sol
     from mosaic.models.af2 import AlphaFold2
-    from mosaic.losses.esmc import ESMCPseudoLikelihood
+    from mosaic.losses.esmc import ESMCPseudoLikelihood, ESMCPseudoPerplexity
     from mosaic.models.esmfold2 import ESMC
     from mosaic.losses.esmc import load_esmc
     import rich
 
-    return ESMCPseudoLikelihood, TOKENS, load_esmc, sp
+    return (
+        AlphaFold2,
+        ESMCPseudoLikelihood,
+        ESMCPseudoPerplexity,
+        TOKENS,
+        load_esmc,
+        sp,
+    )
 
 
 @app.cell
@@ -85,10 +101,11 @@ def _(load_esmc):
 
 
 @app.cell
-def _(ESMCPseudoLikelihood, esmc):
+def _(ESMCPseudoLikelihood, ESMCPseudoPerplexity, esmc):
     # now we can use that for our loss: 
     loss_sequences = ESMCPseudoLikelihood(esmc)
-    return (loss_sequences,)
+    perplexity = ESMCPseudoPerplexity(esmc)
+    return loss_sequences, perplexity
 
 
 @app.cell
@@ -101,16 +118,16 @@ def _(jax, jnp, pd):
         # 1. Map known tokens to integer indices (0 to N-1)
         token_to_idx = {token: idx for idx, token in enumerate(tokens_list)}
         num_classes = len(tokens_list)
-    
+
         int_sequences = []
         for seq in df["seq"]:
             # Substitute 'U' with 'C' on the fly
             cleaned_seq = seq.replace("U", "C")
-        
+
             # Convert string characters to integer indices
             int_seq = [token_to_idx[char] for char in cleaned_seq]
             int_sequences.append(int_seq)
-        
+
         # 2. Convert to JAX array and apply one-hot encoding
         # Output shape: (num_sequences, sequence_length, num_classes)
         jax_matrix = jnp.array(int_sequences)
@@ -126,13 +143,13 @@ def _(TOKENS, designs, encode_designs_simple):
 
 
 @app.cell
-def _(designs, key, loss_sequences, one_hot_seq):
+def _(designs, key, loss_sequences, one_hot_seq, perplexity):
     # compute the loss for all the sequences
     from rich.progress import track
 
     losses = []
     for n in track(range(one_hot_seq.shape[0]), description="ESM-C Loss"):
-        loss_esmc = loss_sequences(one_hot_seq[n], key=key)
+        loss_esmc = loss_sequences(one_hot_seq[n], key=key) + perplexity(one_hot_seq[n], key=key)
         losses.append(float(loss_esmc[0]))
 
     # Assign the entire list to the column instantly
@@ -142,7 +159,7 @@ def _(designs, key, loss_sequences, one_hot_seq):
 
 @app.cell
 def _(designs, pd, plt):
-    k = 5
+    k = 10
     best  = designs.nlargest(k, "esmc_loss")    # highest esmc_loss
     worst = designs.nsmallest(k, "esmc_loss")   # lowest esmc_loss
 
@@ -169,9 +186,9 @@ def _(designs, pd, plt):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## AF3 based ranking:
+    ## OF3 based ranking:
 
-    Now we can compute the ranking using a different folding model (AF3)
+    Now we can compute the ranking using a different folding model (OF3)
     """)
     return
 
@@ -208,8 +225,8 @@ def _(MSA_PATH, TARGET_SEQUENCE, TargetChain, key, of3, sp):
         )
         ranking_loss = of3.build_multisample_loss(
             loss = 1.00 * sp.IPTMLoss()
-            + 0.05 * sp.TargetBinderIPSAE()
-            + 0.05 * sp.BinderTargetIPSAE(),
+            + 0.5 * sp.TargetBinderIPSAE()
+            + 0.5 * sp.BinderTargetIPSAE(),
             features = features, 
             recycling_steps=3,
             num_samples=6
@@ -217,17 +234,109 @@ def _(MSA_PATH, TARGET_SEQUENCE, TargetChain, key, of3, sp):
         loss_value, _ = evaluate_loss(ranking_loss, onehot, key)
         return (seq_str, loss_value.item())
 
-    return (rank_loss,)
+    return evaluate_loss, rank_loss
 
 
 @app.cell
-def _(designs, one_hot_seq, rank_loss):
+def _(designs, mo, one_hot_seq, rank_loss):
+
+    rows = list(designs.iterrows())
+    of3_losses = []
+
+    with mo.status.progress_bar(total=len(rows), title="scoring designs") as bar:
+        for p, (idx, row) in enumerate(rows):
+            try:
+                of3_losses.append(float(rank_loss(row["seq"], one_hot_seq[p])[1]))
+            except Exception as e:
+                print(f"row {idx} failed: {type(e).__name__}: {e}")
+                of3_losses.append(float("nan"))
+            bar.update()
+
+    designs["of3_loss"] = of3_losses
+    return
+
+
+@app.cell
+def _(designs, k, pd, plt):
+    # now plot the best of3 scores
+    top_g = 10
+    best_of  = designs.nlargest(k, "of3_loss")    # highest esmc_loss
+    worst_of = designs.nsmallest(k, "of3_loss")   # lowest esmc_loss
+
+    fix, axs = plt.subplots(figsize=(6, 5))
+    axs.scatter(designs["loss"], designs["of3_loss"],
+               s=18, c="0.8", edgecolor="none", label=f"all designs (n={len(designs)})")
+    axs.scatter(best_of["loss"], best_of["of3_loss"],
+               s=30, c="tab:red", edgecolor="k", linewidth=0.4, label=f"worst {top_g} of3_loss")
+    axs.scatter(worst_of["loss"], worst_of["of3_loss"],
+               s=30, c="tab:green", edgecolor="k", linewidth=0.4, label=f"best {top_g} of3_loss")
+
+    for _, v in pd.concat([best_of, worst_of]).iterrows():
+        axs.annotate(str(v.name), (v["loss"], v["of3_loss"]),
+                    fontsize=7, xytext=(4, 3), textcoords="offset points")
+
+    axs.set_xlabel("design loss")
+    axs.set_ylabel("OF3-Loss")
+    axs.legend(frameon=False, fontsize=8)
+    fix.tight_layout()
+    plt.show()
+    return
+
+
+@app.cell
+def _(DESIGN_PATH, designs):
+    designs.to_csv(DESIGN_PATH/"correctly_ranked_candidates.csv")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## AF2 Based Ranking
+    """)
+    return
+
+
+@app.cell
+def _(AlphaFold2, one_hot_seq):
+    af2 = AlphaFold2()
+    binder_length = one_hot_seq.shape[1]
+    return (af2,)
+
+
+@app.cell
+def _(MSA_PATH, TARGET_SEQUENCE, TargetChain, af2, evaluate_loss, key, sp):
+    # define the loss function-> we are going to keep the simple loss funciton 
+    #that we used for the hallucination optimization: 
+    def rank_loss_af2(seq_str:str,onehot):
+        features, writer = af2.target_only_features(
+            chains=[
+                TargetChain(sequence=seq_str, use_msa=False),
+                TargetChain(TARGET_SEQUENCE, use_msa=True, msa_path=MSA_PATH)
+            ],
+        )
+        ranking_loss = af2.build_loss(
+            loss = 1.00 * sp.IPTMLoss()
+            + 0.5 * sp.TargetBinderIPSAE()
+            + 0.5 * sp.BinderTargetIPSAE(),
+            features = features, 
+            recycling_steps=3,
+        ) 
+        loss_value, _ = evaluate_loss(ranking_loss, onehot, key)
+        return (seq_str, loss_value.item())
+
+    return (rank_loss_af2,)
+
+
+@app.cell
+def _(designs, one_hot_seq, rank_loss_af2):
+    # write simple loss for af2: 
     from rich.progress import (
         Progress, SpinnerColumn, BarColumn, TextColumn,
         TimeElapsedColumn, TimeRemainingColumn, MofNCompleteColumn,
     )
 
-    of3_losses = []
+    af2_losses = []
 
     with Progress(
         SpinnerColumn(),
@@ -243,40 +352,27 @@ def _(designs, one_hot_seq, rank_loss):
 
         for p, (idx, row) in enumerate(designs.iterrows()):
             try:
-                of3_losses.append(float(rank_loss(row["seq"], one_hot_seq[p])[1]))
+                af2_losses.append(float(rank_loss_af2(row["seq"], one_hot_seq[p])[1]))
             except Exception as e:
                 progress.console.print(f"[red]row {idx} failed:[/red] {type(e).__name__}: {e}")
-                of3_losses.append(float("nan"))
+                af2_losses.append(float("nan"))
             progress.advance(task)
 
-    designs["of3_loss"] = of3_losses
+    designs["af2_losses"] = af2_losses
     return
 
 
 @app.cell
-def _(designs, k, pd, plt):
-    # now plot the best of3 scores
-    top_n = 5
-    best_of  = designs.nlargest(k, "of3_loss")    # highest esmc_loss
-    worst_of = designs.nsmallest(k, "of3_loss")   # lowest esmc_loss
+def _(designs):
+    designs
+    return
 
-    fi, a = plt.subplots(figsize=(6, 5))
-    a.scatter(designs["loss"], designs["of3_loss"],
-               s=18, c="0.8", edgecolor="none", label=f"all designs (n={len(designs)})")
-    a.scatter(best_of["loss"], best_of["of3_loss"],
-               s=50, c="tab:red", edgecolor="k", linewidth=0.4, label=f"worst {top_n} of3_loss")
-    a.scatter(worst_of["loss"], worst_of["of3_loss"],
-               s=50, c="tab:green", edgecolor="k", linewidth=0.4, label=f"best {top_n} of3_loss")
 
-    for _, e in pd.concat([best_of, worst_of]).iterrows():
-        a.annotate(str(e.name), (e["loss"], e["of3_loss"]),
-                    fontsize=7, xytext=(4, 3), textcoords="offset points")
-
-    a.set_xlabel("design loss")
-    a.set_ylabel("OF3-Loss")
-    a.legend(frameon=False, fontsize=8)
-    fi.tight_layout()
-    plt.show()
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Plot the best vs. worst binders
+    """)
     return
 
 

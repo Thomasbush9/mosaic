@@ -39,6 +39,14 @@ export MOSAIC_SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$U
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${MOSAIC_REPO:-$(cd "$HERE/.." && pwd)}"
 
+# Interactive notebooks are the development workflow, so use the repository's
+# current Python sources by default instead of the copy baked into the image.
+# Set MOSAIC_DEV_SRC explicitly to select another source tree, or set it to an
+# empty value to test the image exactly as built.
+if [[ -z "${MOSAIC_DEV_SRC+x}" ]]; then
+    export MOSAIC_DEV_SRC="$REPO/src"
+fi
+
 # A marimo server is a long-lived process that accumulates CPU, and a notebook
 # running a structure model would peg a core for minutes at a time. That is
 # precisely what FASRC's process arbiter kills on a login node — the job dies
@@ -142,13 +150,22 @@ cat <<MSG
 
       http://localhost:${PORT}/?access_token=${TOKEN}
 
-  Ctrl-C here stops the server. ${SLURM_JOB_ID:+scancel ${SLURM_JOB_ID} releases the node.}
+  Ctrl-C here stops the server at once, no confirmation.
+  ${SLURM_JOB_ID:+scancel ${SLURM_JOB_ID} releases the node.}
 ================================================================
 
 MSG
 
 cd "$REPO"
-exec "$HERE/mosaic-exec.sh" marimo edit "$NOTEBOOK" \
+# -y goes before `edit`: it is an option of the `marimo` group, not of `edit`.
+# Without it marimo's SIGINT handler answers Ctrl-C with a "quit? (y/N)" prompt
+# instead of quitting. The prompt is written with a leading \r and no newline, so
+# the next line of uvicorn/JAX output overwrites it and the server looks like it
+# ignored you — and because the handler runs on the event loop thread, the
+# blocking input() stops the server answering the browser while it waits. Only
+# reachable from an salloc shell; under sbatch stdin is not a tty and marimo
+# exits on the first SIGINT regardless.
+exec "$HERE/mosaic-exec.sh" marimo -y edit "$NOTEBOOK" \
     --headless \
     --host 127.0.0.1 \
     --port "$PORT" \
