@@ -28,6 +28,12 @@ def _(Path):
 
 
 @app.cell
+def _(DESIGN_PATH, pd):
+    designs = pd.read_csv(DESIGN_PATH/"correctly_ranked_candidates.csv")
+    return (designs,)
+
+
+@app.cell
 def _(DESIGN_PATH, pd, re):
     # now we create a df for each design vs. custom loss function: 
     d0 = DESIGN_PATH / "designs_0.txt"
@@ -43,7 +49,7 @@ def _(DESIGN_PATH, pd, re):
                 designs[i] = {"seq":seq, "loss":float(l)}
                 i += 1
     designs = pd.DataFrame.from_dict(designs, orient="index")
-    
+
     return (designs,)
 
 
@@ -280,6 +286,12 @@ def _(designs, k, pd, plt):
     axs.legend(frameon=False, fontsize=8)
     fix.tight_layout()
     plt.show()
+    return
+
+
+@app.cell
+def _(designs):
+    designs
     return
 
 
