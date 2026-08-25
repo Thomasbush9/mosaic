@@ -141,31 +141,34 @@ def _proxy(output, binder_len, **kw) -> float:
 
 
 @pytest.mark.skipif(SYSTEM != "7opb", reason="needs a structure with solvent")
-def test_proposals_epitope_is_unsafe_on_solvated_structures(system):
+def test_proposals_epitope_is_safe_on_solvated_structures(system):
     """The producer side of `epitope_idx`, which the loss cannot defend against.
 
-    `proposals.epitope_from_complex` enumerates *all* residues of the target
-    chain, waters and heteroatoms included, so its indices are positions in that
-    list rather than in the target sequence. 7opb carries 90 solvent residues on
-    chain A, so the epitope it returns runs past the end of the chain.
+    `epitope_from_complex` used to enumerate *all* residues of the target chain,
+    waters and heteroatoms included, so its indices were positions in that list
+    rather than in the target sequence. 7opb carries 90 solvent residues on
+    chain A, so the epitope it returned ran past the end of the chain -- and
+    feeding those to `DistogramIPTMProxy(epitope_idx=...)` does not raise,
+    because a JAX gather clamps. The loss optimised against the last target
+    column repeated and reported a perfectly ordinary number.
 
-    Feeding those into `DistogramIPTMProxy(epitope_idx=...)` does not raise --
-    JAX gather clamps -- so the loss would optimise against the last target
-    column repeated and report a perfectly ordinary number. Generated CIFs have
-    no solvent, which is why this has not bitten the pipeline yet.
+    It now drops solvent and indexes by seqid, so the indices are target
+    positions. This is the assertion the old one inverted; the frame itself is
+    covered synthetically in `test_proposals_epitope.py`.
     """
     import proposals
     from bench_distogram_iptm_proxy import _find, SYSTEMS
 
+    n_target = len(system["target_seq"])
     raw = proposals.epitope_from_complex(
         _find(SYSTEMS["7opb"]["cif"]), binder_length=len(system["binder_seq"]),
         cutoff=8.0,
     )
-    n_target = len(system["target_seq"])
     bad = [i for i in raw if i >= n_target]
     print(f"\nepitope_from_complex: {len(raw)} indices, {len(bad)} >= "
           f"len(target)={n_target}: {bad}")
-    assert bad, "solvent no longer leaks in -- if proposals.py was fixed, delete this"
+    assert raw, "no contacts found at all -- the chain split is probably wrong"
+    assert not bad, f"solvent still leaking: {bad}"
 
 
 # ------------------------------------------------------- 1. the change is inert

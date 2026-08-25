@@ -174,7 +174,11 @@ def main() -> int:
         epitope, notes = hot0, ["epitope was specified as hotspots and conditioned on"]
     else:
         # CA-only complexes, so use a wider cutoff than the all-atom default.
-        epitope, notes = P.consensus_epitope(cifs, binder_length=a.binder_length, cutoff=12.0)
+        # Proteina sees the whole target and the writer numbers chain B 1..N
+        # contiguously, so these indices are already full-target ones.
+        epitope, notes = P.consensus_epitope(cifs, binder_length=a.binder_length,
+                                             cutoff=12.0,
+                                             target_length=len(target_seq))
 
     ps = P.ProposalSet(
         name=out.name, generator="proteina",
@@ -182,6 +186,7 @@ def main() -> int:
         target_fasta=a.target_fasta or "", target_structure=str(cif),
         binder_length=a.binder_length, n_designs=a.num_designs,
         sequences=seqs, epitope_idx=epitope,
+        epitope_frame=P.EPITOPE_FRAME_TARGET,
         params={"hotspots": hot1, "seed": a.seed, "target_chain": a.target_chain},
         notes=notes + ["backbones are CA-only; refine before trusting geometry"],
     )
