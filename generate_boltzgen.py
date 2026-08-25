@@ -189,8 +189,26 @@ def main() -> int:
     # that choice is what lets the refinement stage aim at the same interface
     # instead of re-deriving a pose from a generic contact term.
     cifs = sorted(out.glob("design_*.cif"))
+    target_len = P.target_chain_length(target_cif, a.target_chain)
     epitope, notes = P.consensus_epitope(cifs, binder_length=a.binder_length,
-                                         cutoff=a.contact_cutoff)
+                                         cutoff=a.contact_cutoff,
+                                         target_length=target_len)
+
+    # The binder can only have touched residues the model was shown, so with a
+    # crop the epitope must be a subset of the pocket. That is a one-line
+    # invariant, and it is the check that would have caught the crop-relative
+    # indexing this whole path used to emit — the numbers looked entirely
+    # plausible, they just pointed at the wrong residues. Fail loudly: a
+    # mis-aimed epitope costs a full campaign round and reports nothing.
+    if pocket1:
+        outside = [e + 1 for e in epitope if e + 1 not in set(pocket1)]
+        if outside:
+            raise SystemExit(
+                f"epitope escaped the crop: {len(outside)} of {len(epitope)} "
+                f"residues are outside the {len(pocket1)}-residue pocket "
+                f"({outside[:10]}...). The binder cannot contact residues the "
+                "model never saw, so this is an indexing fault, not a result."
+            )
 
     ps = P.ProposalSet(
         name=out.name, generator="boltzgen",
@@ -198,6 +216,7 @@ def main() -> int:
         target_fasta=a.target_fasta or "", target_structure=str(target_cif),
         binder_length=a.binder_length, n_designs=a.num_designs,
         sequences=[r["sequence"] for r in records], epitope_idx=epitope,
+        epitope_frame=P.EPITOPE_FRAME_TARGET,
         params={"secondary_structure": ss, "sampling_steps": a.sampling_steps,
                 "step_scale": a.step_scale, "noise_scale": a.noise_scale,
                 "recycling_steps": a.recycling_steps, "seed": a.seed,

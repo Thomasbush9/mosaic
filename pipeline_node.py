@@ -30,6 +30,61 @@ def _exec(script_args: list[str]) -> None:
     _run([str(REPO / "singularity" / "mosaic-exec.sh"), "python"] + script_args)
 
 
+def _target_seq_length(spec: str) -> int:
+    """Length of the target run_design will featurise.
+
+    ``target.fasta`` is either a path or a literal sequence — run_design accepts
+    both — so resolve it the same way here rather than assuming.
+    """
+    if not spec:
+        return 0
+    p = Path(spec)
+    if p.is_file():
+        body = "".join(line for line in p.read_text().splitlines()
+                       if not line.startswith(">"))
+        return len("".join(body.split()))
+    return len(spec.strip())
+
+
+def _epitope_for_loss(src: Path, target_len: int) -> list[int]:
+    """The upstream epitope, or nothing, but never a wrong one.
+
+    Indices reach `BinderTargetContact` as a gather, and JAX clamps an
+    out-of-range gather instead of raising — so a bad epitope optimises against
+    whatever column it landed on and reports a perfectly ordinary number. Every
+    way this can be wrong has to be caught here, because nothing downstream will.
+    """
+    man = src / "manifest.json"
+    if not man.exists():
+        return []
+    m = json.loads(man.read_text())
+    ep = m.get("epitope_idx") or []
+    if not ep:
+        return []
+
+    # An unstamped manifest predates epitope_frame. That is fine for a full
+    # target, but a set generated with hotspots was cropped, and those indices
+    # count positions within the crop rather than in the target.
+    frame = m.get("epitope_frame", "")
+    if frame != "target":
+        if m.get("params", {}).get("pocket"):
+            raise SystemExit(
+                f"{man} has a crop-relative epitope (generated against a "
+                f"{len(m['params']['pocket'])}-residue pocket, no epitope_frame). "
+                "Rebase it with repair_epitope.py before refining against it."
+            )
+        print(f"epitope: {len(ep)} residues from an unstamped manifest; "
+              "treating as full-target (no crop recorded)")
+
+    if target_len and (bad := [i for i in ep if not 0 <= i < target_len]):
+        raise SystemExit(
+            f"{man}: epitope indices {bad[:10]} are outside the "
+            f"{target_len}-residue target — refusing to hand them to a loss "
+            "that would silently clamp them."
+        )
+    return ep
+
+
 def main() -> int:
     node_dir = Path(os.environ["NODE_DIR"])
     node = json.loads((node_dir / "node.json").read_text())
@@ -191,8 +246,9 @@ def main() -> int:
                 tsec["msa"] = _abs(tsec["msa"])
         # Carry the epitope from the upstream manifest into the contact loss, so
         # the optimizer aims at the interface the generator chose.
-        man = src / "manifest.json"
-        ep = json.loads(man.read_text()).get("epitope_idx", []) if man.exists() else []
+        ep = _epitope_for_loss(
+            src, _target_seq_length((tsec or {}).get("fasta", "")
+                                    if isinstance(tsec, dict) else ""))
         cfg.setdefault("binder", {})["init_fasta"] = str(seed)
         for l in cfg.get("losses", []):
             if l["name"] == "BinderTargetContact" and ep:

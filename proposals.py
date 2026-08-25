@@ -33,6 +33,10 @@ from typing import Any
 MANIFEST = "manifest.json"
 FASTA = "proposals.fasta"
 
+#: ``ProposalSet.epitope_frame`` value meaning "0-based into the full target
+#: sequence". Anything else must not be fed to a loss.
+EPITOPE_FRAME_TARGET = "target"
+
 
 @dataclass
 class ProposalSet:
@@ -44,9 +48,14 @@ class ProposalSet:
     binder_length: int
     n_designs: int
     sequences: list[str] = field(default_factory=list)
-    # 0-based indices into the TARGET chain — the same convention
+    # 0-based indices into the FULL TARGET SEQUENCE — the same convention
     # BinderTargetContact.epitope_idx uses (structure_prediction.py:281).
     epitope_idx: list[int] = field(default_factory=list)
+    # Which coordinate system epitope_idx is in. "target" is the only frame a
+    # campaign can consume. "" means unstamped, i.e. written before the frame
+    # was recorded: correct for a full target, but crop-relative (and therefore
+    # wrong) for any set generated with hotspots. See EPITOPE_FRAME_TARGET.
+    epitope_frame: str = ""
     params: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
@@ -89,52 +98,101 @@ def list_sets(designs_dir: Path) -> list[tuple[str, ProposalSet]]:
     return out
 
 
+def _seqids(chain) -> list[int]:
+    return [res.seqid.num for res in chain]
+
+
+def _is_contiguous_from_one(chain, n: int) -> bool:
+    """A chain the generator built itself: exactly ``n`` residues, numbered 1..n."""
+    return len(chain) == n and _seqids(chain) == list(range(1, n + 1))
+
+
+def _pick_binder_and_target(chains, binder_length: int | None):
+    """Split the complex into (binder, target).
+
+    Not by chain NAME: BoltzGen's YAML declares the binder as chain B, but the
+    structure writer emits the binder as chain A and the target as chain B, so
+    trusting the declared names reads the wrong chain.
+
+    Not by LENGTH alone either, which is what the original heuristic did. A
+    cropped target can be *shorter* than the binder — an 8 A pocket around 11
+    hotspots on the 237-residue DIO3 ECD is 46 residues against an 80-residue
+    binder — so "shortest chain is the binder" inverts on exactly the runs this
+    function most needs to get right.
+
+    The reliable tell is numbering. The binder is generated de novo and is always
+    numbered 1..binder_length with no gaps; a cropped target carries the sparse
+    seqids of the residues that survived the crop.
+    """
+    if binder_length is not None:
+        exact = [c for c in chains if _is_contiguous_from_one(c, binder_length)]
+        if len(exact) == 1:
+            binder = exact[0]
+        else:
+            binder = min(chains, key=lambda c: (abs(len(c) - binder_length), c.name))
+    else:
+        gapped = [c for c in chains if _seqids(c) != list(range(1, len(c) + 1))]
+        if len(gapped) == 1:
+            target = gapped[0]
+            return max((c for c in chains if c.name != target.name), key=len), target
+        binder = min(chains, key=len)
+    target = max((c for c in chains if c.name != binder.name), key=len)
+    return binder, target
+
+
 def epitope_from_complex(cif_path: Path, binder_length: int | None = None,
-                         cutoff: float = 8.0) -> list[int]:
+                         cutoff: float = 8.0,
+                         target_length: int | None = None) -> list[int]:
     """Target residues the generated binder actually touches.
 
     This is the connective tissue: a generative model places the binder
     somewhere specific, and without extracting that, refinement has no idea
     where it was meant to go.
 
-    Chains are identified by LENGTH, not by name. BoltzGen's YAML declares the
-    binder as chain B, but the structure writer emits the binder as chain A and
-    the target as chain B — trusting the declared names silently reads the wrong
-    chain and yields a meaningless epitope.
-
-    Returns 0-based indices into the target chain, matching
+    Returns 0-based indices into the FULL target sequence, matching
     ``BinderTargetContact.epitope_idx``. Any-atom within ``cutoff`` counts as
     contact; the point is to aim the refinement, not to make a final call.
+
+    Indices come from ``seqid``, not from the residue's position in the chain.
+    That distinction is the whole correctness argument. BoltzGen is handed a
+    *cropped* target when hotspots are used (there is no attractive hotspot
+    term, so the crop is the mechanism), and its output complexes carry only the
+    pocket residues — with their original, sparse seqids preserved. Enumerating
+    that chain yields positions within the crop, which then get read as
+    positions in the full target: on a real run, "pocket residue 7" was steered
+    at "domain residue 7", ~100 residues away. Reading seqid is correct for both
+    cases, since an uncropped target is numbered 1..N contiguously.
+
+    Solvent and ligands are dropped before the search. They are numbered outside
+    the polymer's range, so they would otherwise contribute indices past the end
+    of the target sequence, and a JAX gather clamps those silently rather than
+    raising. Pass ``target_length`` to enforce that bound explicitly.
     """
     import gemmi
 
     st = gemmi.read_structure(str(cif_path))
     st.setup_entities()
+    st.remove_ligands_and_waters()
     st.remove_hydrogens()
     model = st[0]
     chains = [ch for ch in model if len(ch) > 0]
     if len(chains) < 2:
         return []
 
-    if binder_length is not None:
-        binder = min(chains, key=lambda c: abs(len(c) - binder_length))
-        target = max((c for c in chains if c.name != binder.name), key=len)
-    else:
-        ordered = sorted(chains, key=len)
-        binder, target = ordered[0], ordered[-1]
+    binder, target = _pick_binder_and_target(chains, binder_length)
 
     ns = gemmi.NeighborSearch(st, cutoff).populate()
     hits: set[int] = set()
-    tgt_pos = {res.seqid.num: i for i, res in enumerate(target)}
     for res in binder:
         for atom in res:
             for m in ns.find_atoms(atom.pos, "\0", radius=cutoff):
                 cra = m.to_cra(model)
                 if cra.chain.name != target.name:
                     continue
-                i = tgt_pos.get(cra.residue.seqid.num)
-                if i is not None:
-                    hits.add(i)
+                i = cra.residue.seqid.num - 1
+                if i < 0 or (target_length is not None and i >= target_length):
+                    continue
+                hits.add(i)
     return sorted(hits)
 
 
@@ -168,6 +226,47 @@ def consensus_epitope(cif_paths: list[Path], min_fraction: float = 0.3,
     notes.append(f"epitope from {used} complexes, residues contacted by "
                  f">={threshold} of them")
     return ep, notes
+
+
+def epitope_crop_to_target(epitope_idx: list[int], pocket1: list[int]) -> list[int]:
+    """Rebase a crop-relative epitope onto the full target.
+
+    For repairing manifests written before ``epitope_from_complex`` indexed by
+    seqid. The crop is emitted in sorted pocket order, so a stored index ``i``
+    is the ``i``-th pocket residue: ``pocket1[i]`` 1-based, hence ``- 1``.
+
+    Exact rather than approximate — it reproduces what the fixed contact
+    calculation returns from the same CIFs — but only valid on a set that was
+    actually generated against ``pocket1``. Raises rather than guessing if an
+    index does not fit, since a silent mis-map is what caused this in the
+    first place.
+    """
+    pocket = sorted(pocket1)
+    bad = [i for i in epitope_idx if not 0 <= i < len(pocket)]
+    if bad:
+        raise ValueError(
+            f"indices {bad} are outside the {len(pocket)}-residue crop — this "
+            "epitope is not crop-relative, so rebasing it would corrupt it"
+        )
+    return sorted({pocket[i] - 1 for i in epitope_idx})
+
+
+def target_chain_length(cif_path: Path, chain_id: str = "A") -> int:
+    """Length of the target's polymer chain, for bounds-checking an epitope.
+
+    The highest seqid rather than the residue count: the two agree for a target
+    written by ``predict_target.py``, but only the former stays meaningful if a
+    structure is missing residues.
+    """
+    import gemmi
+
+    st = gemmi.read_structure(str(cif_path))
+    st.setup_entities()
+    st.remove_ligands_and_waters()
+    model = st[0]
+    names = [c.name for c in model]
+    chain = model[chain_id] if chain_id in names else max(model, key=len)
+    return max(_seqids(chain), default=0)
 
 
 def parse_positions(text: str) -> list[int]:
@@ -255,6 +354,18 @@ def merge_sets(part_dirs: list[Path], out_dir: Path, name: str) -> "ProposalSet"
     if not parts:
         raise SystemExit("no readable parts to merge")
 
+    # Unioning epitopes only means anything if every part counts residues the
+    # same way. A pool that mixes a cropped BoltzGen set with a full-target
+    # Proteina set would otherwise merge two coordinate systems into one list
+    # and look entirely normal doing it.
+    frames = {p.epitope_frame for p in parts if p.epitope_idx}
+    if len(frames) > 1:
+        raise SystemExit(
+            f"parts disagree on epitope_frame ({sorted(frames)}) — refusing to "
+            "union epitopes across coordinate systems; repair the parts first "
+            "(see repair_epitope.py)"
+        )
+
     out_dir.mkdir(parents=True, exist_ok=True)
     seqs: list[str] = []
     epi: set[int] = set()
@@ -272,6 +383,7 @@ def merge_sets(part_dirs: list[Path], out_dir: Path, name: str) -> "ProposalSet"
         target_fasta=base.target_fasta, target_structure=base.target_structure,
         binder_length=base.binder_length, n_designs=len(seqs),
         sequences=seqs, epitope_idx=sorted(epi),
+        epitope_frame=(frames.pop() if frames else base.epitope_frame),
         params={**base.params, "merged_from": [str(d) for d in part_dirs]},
         notes=[f"merged from {len(parts)} shards, {len(seqs)} designs total"],
     )
