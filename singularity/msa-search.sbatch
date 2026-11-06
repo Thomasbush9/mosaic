@@ -44,7 +44,7 @@ set -euo pipefail
 
 MSA_IMAGE="${MSA_IMAGE:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/singularity_dev/images/msa.sif}"
 MSA_DB="${MSA_DB:-/n/holylfs06/LABS/kempner_shared/Everyone/workflow/boltz/mmseq2_db}"
-MSA_OUT="${MSA_OUT:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/msa}"
+MSA_OUT="${MSA_OUT:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/msa}"
 THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
 mkdir -p "$MSA_OUT"

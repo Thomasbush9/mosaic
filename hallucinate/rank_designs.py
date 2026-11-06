@@ -22,8 +22,8 @@ def _():
 @app.cell
 def _(Path):
     TARGET_SEQUENCE = "DDNRLCTLASLKAVWHGQKLDFFKQAHEGGPAPNSEVVLPDGFQSQHILDYAQGNRPLVLNFGSCTCPPFMARMSAFQRLVTKYQRDVDFLIIYIEEAHPSDGWVTTDSPYIIPQHRSLEDRVSAARVLQQGAPGCALVLDTMANSSSSAYGAYFERLYVIQSGTIMYQGGRGPDGYQVSELRTWLERYDEQLHGARPRRV"
-    MSA_PATH = "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/dio3_cut/msa_out/sequences/dio3_cut/msa/DIO3.a3m"
-    DESIGN_PATH=Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/dio3_cut/designs")
+    MSA_PATH = "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/dio3_cut/msa_out/sequences/dio3_cut/msa/DIO3.a3m"
+    DESIGN_PATH=Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/dio3_cut/designs")
     return DESIGN_PATH, MSA_PATH, TARGET_SEQUENCE
 
 

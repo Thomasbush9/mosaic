@@ -7,7 +7,7 @@
 #     salloc -p kempner_h100 -A kempner_bsabatini_lab --gres=gpu:1 \
 #            -c 8 --mem=128G -t 6:00:00
 #     # once the allocation lands (you get a shell ON the GPU node)
-#     cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/mosaic
+#     cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/mosaic
 #     ./singularity/marimo.sh examples/example_notebook.py
 #     # the banner prints the exact ssh command to run on your laptop
 #
@@ -30,9 +30,12 @@
 #                 MOSAIC_SIF MOSAIC_WEIGHTS MOSAIC_SCRATCH
 set -euo pipefail
 
-SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup
+SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup
+# images/ did not move with the rest of the tree: the SIFs now
+# live one level up, in binder_design/images/.
+IMAGES=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images
 
-export MOSAIC_SIF="${MOSAIC_SIF:-$SETUP/images/mosaic.sif}"
+export MOSAIC_SIF="${MOSAIC_SIF:-$IMAGES/mosaic.sif}"
 export MOSAIC_WEIGHTS="${MOSAIC_WEIGHTS:-$SETUP/weights}"
 export MOSAIC_SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$USER/mosaic}"
 

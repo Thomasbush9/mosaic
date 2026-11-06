@@ -18,8 +18,11 @@
 #SBATCH --output=logs/boltzgen-%j.out
 #SBATCH --error=logs/boltzgen-%j.out
 set -euo pipefail
-SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup
-export MOSAIC_SIF="${MOSAIC_SIF:-$SETUP/images/mosaic.sif}"
+SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup
+# images/ did not move with the rest of the tree: the SIFs now
+# live one level up, in binder_design/images/.
+IMAGES=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images
+export MOSAIC_SIF="${MOSAIC_SIF:-$IMAGES/mosaic.sif}"
 export MOSAIC_WEIGHTS="${MOSAIC_WEIGHTS:-$SETUP/weights}"
 export MOSAIC_SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$USER/mosaic}"
 REPO="${MOSAIC_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"

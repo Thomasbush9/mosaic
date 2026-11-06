@@ -46,7 +46,7 @@ def _():
 def _():
     TARGET_SEQUENCE = "DDNRLCTLASLKAVWHGQKLDFFKQAHEGGPAPNSEVVLPDGFQSQHILDYAQGNRPLVLNFGSCTCPPFMARMSAFQRLVTKYQRDVDFLIIYIEEAHPSDGWVTTDSPYIIPQHRSLEDRVSAARVLQQGAPGCALVLDTMANSSSSAYGAYFERLYVIQSGTIMYQGGRGPDGYQVSELRTWLERYDEQLHGARPRRV"
     BINDER_LENGHT = 80
-    MSA_PATH = "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/dio3_cut/msa_out/sequences/dio3_cut/msa/DIO3.a3m"
+    MSA_PATH = "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/dio3_cut/msa_out/sequences/dio3_cut/msa/DIO3.a3m"
     return BINDER_LENGHT, MSA_PATH, TARGET_SEQUENCE
 
 
@@ -223,7 +223,7 @@ def _(design, time, worker_id):
     max_runtime_sec = 2.0 * 60 * 60 
     while time.time() - start_time < max_runtime_sec:
         seq, loss_value = design()
-        with open(f"/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/dio3_cut/designs/designs_{worker_id}.txt", "a") as f:
+        with open(f"/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/dio3_cut/designs/designs_{worker_id}.txt", "a") as f:
             f.write(f">{loss_value:4f}\n{seq}\n")
             results.append((seq, loss_value))
         

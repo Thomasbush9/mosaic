@@ -34,8 +34,8 @@ set -euo pipefail
 
 MODEL="${MODEL:?set MODEL=protenix|boltz1|boltzgen|proteina|of3}"
 
-SIF="${MOSAIC_SIF:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/images/mosaic.sif}"
-W="${MOSAIC_WEIGHTS:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/weights}"
+SIF="${MOSAIC_SIF:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images/mosaic.sif}"
+W="${MOSAIC_WEIGHTS:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/weights}"
 SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$USER/mosaic}"
 SHARED_HF=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/singularity_dev/images/cache_models
 

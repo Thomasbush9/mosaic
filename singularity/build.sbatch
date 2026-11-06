@@ -36,10 +36,10 @@
 set -euo pipefail
 
 MOSAIC_REPO="${MOSAIC_REPO:-${SLURM_SUBMIT_DIR:-$PWD}}"
-IMAGE="${IMAGE:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/images/mosaic.sif}"
+IMAGE="${IMAGE:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images/mosaic.sif}"
 
 export SINGULARITY_TMPDIR="/tmp/$USER/sing_tmp"
-export SINGULARITY_CACHEDIR="${SINGULARITY_CACHEDIR:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/sing_cache}"
+export SINGULARITY_CACHEDIR="${SINGULARITY_CACHEDIR:-/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/sing_cache}"
 mkdir -p "$SINGULARITY_TMPDIR"
 
 echo "node:      $(hostname)"

@@ -32,7 +32,7 @@ import pandas as pd
 
 from common import CRITICAL, GRID, INK, INK_2, MUTED, S1, S2, SURFACE, spearman, style
 
-SETUP = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup")
+SETUP = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup")
 MATRIX = SETUP / "benchmark/matrix"
 FIGS = SETUP / "benchmark/matrix_figs"
 RANKED = SETUP / "dio3_cut/designs/correctly_ranked_candidates_af2.csv"
