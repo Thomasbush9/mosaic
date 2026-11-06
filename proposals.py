@@ -125,15 +125,26 @@ def epitope_from_complex(cif_path: Path, binder_length: int | None = None,
 
     ns = gemmi.NeighborSearch(st, cutoff).populate()
     hits: set[int] = set()
-    tgt_pos = {res.seqid.num: i for i, res in enumerate(target)}
+    # Index by seqid, NOT by position within this chain. Enumeration position is
+    # only correct when the complex contains the FULL target. BoltzGen is handed
+    # a CROPPED target and preserves the original sparse seqids, so enumerating
+    # a 43-residue pocket whose seqids run 1..174 yields 0..42 — pocket-local
+    # indices injected into BinderTargetContact.epitope_idx, which indexes the
+    # full 201-residue chain. Silent, and it steered three campaign rounds at the
+    # wrong residues. See mosaic_setup/EPITOPE_INDEXING_BUG.md.
+    #
+    # Subtracting 1 is right for both cases: a full target has contiguous seqids
+    # 1..N so nothing changes, and a crop maps straight back to its full-target
+    # position. Assumes 1-based seqids matching the declared target sequence,
+    # which holds for targets from predict_target.py.
     for res in binder:
         for atom in res:
             for m in ns.find_atoms(atom.pos, "\0", radius=cutoff):
                 cra = m.to_cra(model)
                 if cra.chain.name != target.name:
                     continue
-                i = tgt_pos.get(cra.residue.seqid.num)
-                if i is not None:
+                i = cra.residue.seqid.num - 1
+                if i >= 0:
                     hits.add(i)
     return sorted(hits)
 
