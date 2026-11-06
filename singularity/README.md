@@ -118,7 +118,7 @@ salloc -p kempner_h100 -A kempner_bsabatini_lab --gres=gpu:1 \
        -c 8 --mem=128G -t 6:00:00
 
 # 2. in the allocation's shell — start the server in the container
-cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/mosaic
+cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/mosaic
 ./singularity/marimo.sh examples/example_notebook.py
 ```
 

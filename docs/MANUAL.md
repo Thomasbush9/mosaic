@@ -77,7 +77,7 @@ much more accurate with one. This searches a local database, so nothing is sent
 to an external server.
 
 ```bash
-cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/mosaic
+cd /n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/mosaic
 mkdir -p logs
 sbatch --export=ALL,TARGET_FASTA=/full/path/targets/yourtarget.fasta,TARGET_NAME=yourtarget \
        singularity/msa-search.sbatch

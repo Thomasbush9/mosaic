@@ -19,7 +19,7 @@
 set -euo pipefail
 
 PORT="${MOSAIC_PORT:-8502}"
-REPO_DEFAULT=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup/mosaic
+REPO_DEFAULT=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup/mosaic
 
 read -r -p "Cluster username: " USER_
 read -r -p "Login node [holylogin06.rc.fas.harvard.edu]: " HOST_

@@ -21,7 +21,7 @@ REGISTRY = Path.home() / ".mosaic_webapp" / "sessions.json"
 # Where the existing data already lives — used as the default session's workdir
 # so a first run shows the work already on disk rather than an empty app.
 DEFAULT_WORKDIR = Path(
-    "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup"
+    "/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup"
 )
 
 SUBDIRS = ("targets", "msa", "designs", "configs", "structures")

@@ -15,7 +15,7 @@ from pathlib import Path
 # switching projects switches the whole view (targets, MSAs, designs, configs).
 # REPO stays fixed — it is where the job scripts live, not where data goes.
 REPO = Path(__file__).resolve().parent.parent
-_WORKDIR = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup")
+_WORKDIR = Path("/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup")
 
 # --------------------------------------------------------------------------
 # Memoization
