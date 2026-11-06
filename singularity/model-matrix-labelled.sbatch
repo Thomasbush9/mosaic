@@ -38,8 +38,11 @@
 
 set -euo pipefail
 
-SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup
-export MOSAIC_SIF="${MOSAIC_SIF:-$SETUP/images/mosaic.sif}"
+SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup
+# images/ did not move with the rest of the tree: the SIFs now
+# live one level up, in binder_design/images/.
+IMAGES=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images
+export MOSAIC_SIF="${MOSAIC_SIF:-$IMAGES/mosaic.sif}"
 export MOSAIC_WEIGHTS="${MOSAIC_WEIGHTS:-$SETUP/weights}"
 export MOSAIC_SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$USER/mosaic}"
 export SINGULARITYENV_JAX_COMPILATION_CACHE_DIR=/jax_cache
@@ -60,6 +63,26 @@ DIAG_N="${DIAG_N:-0}"
 RECYCLING="${RECYCLING:-3}"
 MAX_LEN_GROUPS="${MAX_LEN_GROUPS:-20}"
 SEED="${SEED:-42}"
+# Pinned for the same reason as the agreement run: left unset, each backend uses
+# its own default (2 for Protenix mini, 25 for Boltz), so the accuracy table
+# compares diffusion budgets as much as models. RECYCLING counts TRUNK PASSES.
+SAMPLING_STEPS="${SAMPLING_STEPS:-25}"
+FEATURIZATION="${FEATURIZATION:-binder}"
+NUM_SAMPLES="${NUM_SAMPLES:-1}"
+
+# XLA preallocates XLA_PYTHON_CLIENT_MEM_FRACTION of the card (0.95, set in
+# mosaic.def). CUBIN modules and command buffers are allocated OUTSIDE that pool,
+# so a run that recompiles per design (--featurization target_only) exhausts the
+# remaining sliver long before the pool itself is full. It surfaces as "Failed to
+# load in-memory CUBIN" or "instantiate command buffer", NOT as a normal JAX OOM,
+# and the per-design except records NaN -- so the run completes while quietly
+# dropping the designs that needed the most memory, which are the longest
+# binders. A length-correlated dropout in one model's column is exactly what a
+# model comparison cannot absorb. Protenix hits this on the 434-design labelled
+# set (20 length groups, 413 aa target); XLA_MEM_FRACTION=0.70 gives it room.
+# Purely an allocator setting -- it changes no number the run produces.
+[[ -n "${XLA_MEM_FRACTION:-}" ]] && \
+    export SINGULARITYENV_XLA_PYTHON_CLIENT_MEM_FRACTION="$XLA_MEM_FRACTION"
 
 MODELS=(af2 boltz1 boltz2 of3 protenix esmfold2)
 read -r -a TGTS <<< "${TARGETS:-nipah-glycoprotein-g egfr il7r pd-l1}"
@@ -91,10 +114,15 @@ args=(
     --out "$OUT" --replicates "$REPLICATES" --diag-n "$DIAG_N"
     --recycling "$RECYCLING" --seed "$SEED"
     --max-length-groups "$MAX_LEN_GROUPS"
+    --sampling-steps "$SAMPLING_STEPS"
+    --featurization "$FEATURIZATION" --num-samples "$NUM_SAMPLES"
 )
 [[ -n "${LIMIT:-}" ]] && args+=(--limit "$LIMIT")
 
 echo "task $i -> model=$MODEL target=$TARGET"
+echo "protocol: featurization=$FEATURIZATION num_samples=$NUM_SAMPLES"
+echo "          trunk_passes=$RECYCLING sampling_steps=$SAMPLING_STEPS"
+echo "          target_msa=$TARGET_MSA"
 echo "node:   $(hostname -f)"
 echo "out:    $OUT"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true

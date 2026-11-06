@@ -34,8 +34,11 @@
 
 set -euo pipefail
 
-SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/mosaic_setup
-export MOSAIC_SIF="${MOSAIC_SIF:-$SETUP/images/mosaic.sif}"
+SETUP=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/mosaic_setup
+# images/ did not move with the rest of the tree: the SIFs now
+# live one level up, in binder_design/images/.
+IMAGES=/n/holylfs06/LABS/bsabatini_lab/Everyone/tbush/binder_design/images
+export MOSAIC_SIF="${MOSAIC_SIF:-$IMAGES/mosaic.sif}"
 export MOSAIC_WEIGHTS="${MOSAIC_WEIGHTS:-$SETUP/weights}"
 export MOSAIC_SCRATCH="${MOSAIC_SCRATCH:-/n/netscratch/bsabatini_lab/Everyone/$USER/mosaic}"
 export SINGULARITYENV_JAX_COMPILATION_CACHE_DIR=/jax_cache
@@ -62,12 +65,36 @@ SEED="${SEED:-42}"
 # fair comparison against dio3_cut/designs/correctly_ranked_candidates_af2.csv.
 FEATURIZATION="${FEATURIZATION:-binder}"
 NUM_SAMPLES="${NUM_SAMPLES:-1}"
+# Pinned, not left to each backend's own default -- those range from 2 (Protenix
+# mini) to 25 (Boltz), which silently made every run before 2026-08-24
+# incomparable. RECYCLING counts TRUNK PASSES; model_matrix.py subtracts the
+# offset OF3 and ESMFold2 add internally. Both are echoed in the PROTOCOL line
+# of every log, which is the thing to diff when comparing two runs.
+SAMPLING_STEPS="${SAMPLING_STEPS:-25}"
+
+# XLA preallocates XLA_PYTHON_CLIENT_MEM_FRACTION of the card (0.95, set in
+# mosaic.def). CUBIN modules and command buffers are allocated OUTSIDE that pool,
+# so a run that recompiles per design (--featurization target_only) exhausts the
+# remaining sliver long before the pool itself is full. It surfaces as "Failed to
+# load in-memory CUBIN" or "instantiate command buffer", NOT as a normal JAX OOM,
+# and the per-design except records NaN -- so the run completes while quietly
+# dropping the designs that needed the most memory, which are the longest
+# binders. A length-correlated dropout in one model's column is exactly what a
+# model comparison cannot absorb. Protenix hits this on the 434-design labelled
+# set (20 length groups, 413 aa target); XLA_MEM_FRACTION=0.70 gives it room.
+# Purely an allocator setting -- it changes no number the run produces.
+[[ -n "${XLA_MEM_FRACTION:-}" ]] && \
+    export SINGULARITYENV_XLA_PYTHON_CLIENT_MEM_FRACTION="$XLA_MEM_FRACTION"
 
 MODELS=(af2 boltz1 boltz2 of3 protenix esmfold2)
 CONDITIONS=(complex monomer)
 
 i=${SLURM_ARRAY_TASK_ID:-0}
-if [[ -n "${ONLY_CONDITION:-}" ]]; then
+if [[ -n "${ONLY_MODEL:-}" ]]; then
+    # One model -> the array index is the SHARD index, not a model index.
+    MODEL=$ONLY_MODEL
+    CONDITION=${ONLY_CONDITION:-complex}
+elif [[ -n "${ONLY_CONDITION:-}" ]]; then
     # One condition -> submit --array=0-5, one task per model.
     MODEL=${MODELS[$i]}
     CONDITION=$ONLY_CONDITION
@@ -78,6 +105,10 @@ fi
 
 mkdir -p "$OUTDIR"
 OUT="$OUTDIR/${TAG}_${MODEL}_${CONDITION}.csv"
+# NUM_SHARDS: one model split across --array=0-(N-1), one task per slice of the
+# design set. Cuts wall time at the cost of N model loads and N JIT compiles.
+# Merge with benchmark/merge_shards.py; design_idx is global so concat suffices.
+[[ -n "${NUM_SHARDS:-}" ]] && OUT="${OUT%.csv}_shard${i}.csv"
 
 args=(
     --model "$MODEL" --condition "$CONDITION"
@@ -86,15 +117,18 @@ args=(
     --out "$OUT" --replicates "$REPLICATES" --diag-n "$DIAG_N"
     --recycling "$RECYCLING" --seed "$SEED"
     --featurization "$FEATURIZATION" --num-samples "$NUM_SAMPLES"
+    --sampling-steps "$SAMPLING_STEPS"
 )
 [[ -n "${LIMIT:-}" ]] && args+=(--limit "$LIMIT")
-[[ -n "${SAMPLING_STEPS:-}" ]] && args+=(--sampling-steps "$SAMPLING_STEPS")
 [[ -n "${AF2_REPLICATE:-}" ]] && args+=(--af2-replicate "$AF2_REPLICATE")
 [[ -n "${AF2_MODEL_IDX:-}" ]] && args+=(--af2-model-idx "$AF2_MODEL_IDX")
 [[ -n "${CLEAR_CACHE_EVERY:-}" ]] && args+=(--clear-cache-every "$CLEAR_CACHE_EVERY")
+[[ -n "${NUM_SHARDS:-}" ]] && args+=(--shard "$i" --num-shards "$NUM_SHARDS")
 
 echo "task $i -> model=$MODEL condition=$CONDITION"
 echo "protocol: featurization=$FEATURIZATION num_samples=$NUM_SAMPLES"
+echo "          trunk_passes=$RECYCLING sampling_steps=$SAMPLING_STEPS"
+echo "          target_msa=$TARGET_MSA"
 echo "node:   $(hostname -f)"
 echo "out:    $OUT"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true

@@ -108,6 +108,37 @@ def load_model(name):
 MODELS = ["af2", "boltz1", "boltz2", "of3", "protenix", "esmfold2"]
 CONDITIONS = ["complex", "monomer"]
 
+# --- Protocol normalization -------------------------------------------------
+#
+# "Same recycling, same sampling" has to mean the same COMPUTE, not the same
+# argument. Two knobs do not survive being passed through unchanged.
+#
+# RECYCLING. Every backend takes recycling_steps, and they do not agree on what
+# it counts. AF2 (af2.py: scan(length=recycling_steps)), Boltz-2 (losses/
+# boltz2.py: scan(length=recycling_steps)), Boltz-1 and Protenix (losses/
+# protenix.py: while iter < recycling_steps-1, then one final body call) all
+# treat it as the number of trunk passes. OF3 adds one (of3.py: run_trunk(
+# batch, recycling_steps + 1) -> fori_loop(0, num_cycles)), and ESMFold2's
+# sister library does the same (esmjfold2/model.py: total_steps = num_loops+1).
+# So --recycling 3 gave three models 3 passes and two models 4. The offset
+# below cancels that, and TRUNK_PASSES is what the run should be described by.
+RECYCLING_OFFSET = {"of3": -1, "esmfold2": -1}
+
+# DIFFUSION SAMPLING. Leaving --sampling-steps unset does NOT mean "the same";
+# it means each backend falls back to its own default, and those differ by more
+# than an order of magnitude:
+#
+#     Boltz-1 / Boltz-2   25   (losses/boltz*.py, `if ... is not None else 25`)
+#     OF3                 20   (of3.py: default_sampling_steps)
+#     ESMFold2            14   (esmfold2.py: _DEFAULT_NUM_SAMPLING_STEPS)
+#     Protenix (mini)      2   (protenix.py:194 -- ProtenixMini(..., 2))
+#
+# Protenix scoring a design on a 2-step diffusion sample while Boltz gets 25 is
+# not a model difference, and it is invisible in the output table. Runs before
+# 2026-08-24 all carry it. --sampling-steps now defaults to a single value for
+# every diffusion backend; AF2 has no diffusion and is never handed one.
+DEFAULT_SAMPLING_STEPS = 25
+
 
 def fold(name, model, pssm, features, *, replicate, sample, key, recycling,
          sampling, af2_model_idx=None):
@@ -121,10 +152,12 @@ def fold(name, model, pssm, features, *, replicate, sample, key, recycling,
         k = key
     else:
         k = jax.random.fold_in(jax.random.fold_in(key, replicate), sample)
-    if sampling is not None:
+        # AF2 has no diffusion sampler; every other backend does.
         kw["sampling_steps"] = sampling
     return model.model_output(
-        PSSM=pssm, features=features, recycling_steps=recycling, key=k, **kw
+        PSSM=pssm, features=features,
+        recycling_steps=recycling + RECYCLING_OFFSET.get(name, 0),
+        key=k, **kw
     )
 
 
@@ -246,8 +279,30 @@ def main():
     p.add_argument("--diag-n", type=int, default=100,
                    help="designs scored by replicates 1..n-1 (the diagonal)")
     p.add_argument("--limit", type=int, default=None)
-    p.add_argument("--recycling", type=int, default=3)
-    p.add_argument("--sampling-steps", type=int, default=None)
+    p.add_argument("--shard", type=int, default=0,
+                   help="0-based index of this shard. Splits the design set so "
+                        "one model can run as an array instead of one long "
+                        "job; merge the per-shard CSVs afterwards. design_idx "
+                        "is assigned BEFORE sharding, so ids stay global and "
+                        "the merged table is indistinguishable from one run.")
+    p.add_argument("--num-shards", type=int, default=1,
+                   help="total shards. Each pays its own model load and JIT "
+                        "compile, so this trades throughput for wall time; "
+                        "worth it when one job would near its walltime. Scale "
+                        "--diag-n down by the same factor to keep the diagonal "
+                        "the same size overall.")
+    p.add_argument("--recycling", type=int, default=3,
+                   help="TRUNK PASSES, normalized across backends -- OF3 and "
+                        "ESMFold2 add one internally and are handed one less "
+                        "to compensate (see RECYCLING_OFFSET). Not the raw "
+                        "recycling_steps argument each wrapper takes.")
+    p.add_argument("--sampling-steps", type=int,
+                   default=DEFAULT_SAMPLING_STEPS,
+                   help="diffusion steps for every non-AF2 backend. Pinned "
+                        "rather than left to each model's own default, which "
+                        "range from 2 (Protenix mini) to 25 (Boltz) and made "
+                        "every earlier run incomparable. See the note above "
+                        "DEFAULT_SAMPLING_STEPS.")
     p.add_argument("--featurization", choices=["binder", "target_only"],
                    default="binder",
                    help="binder: binder_features(L, [target]) -- one pack per "
@@ -298,6 +353,17 @@ def main():
     df = df.reset_index(drop=True)
     df["mx_idx"] = df.index          # stable id, independent of grouping order
 
+    if args.num_shards > 1:
+        if not 0 <= args.shard < args.num_shards:
+            raise SystemExit(f"--shard must be in [0, {args.num_shards})")
+        # Strided, so no shard inherits all the slow designs. For a set with
+        # many binder lengths this spreads lengths across shards and each pays
+        # their compiles; a contiguous split of a length-sorted frame would be
+        # cheaper there.
+        df = df.iloc[args.shard::args.num_shards]
+        print(f"shard {args.shard}/{args.num_shards}: {len(df)} designs",
+              flush=True)
+
     if args.max_length_groups:
         keep = df.mx_len.value_counts().nlargest(args.max_length_groups).index
         dropped = len(df) - int(df.mx_len.isin(keep).sum())
@@ -334,8 +400,25 @@ def main():
         print(f"NOTE: AF2 is deterministic; --num-samples {n_samples} would "
               f"fold the same structure {n_samples}x. Forcing 1.", flush=True)
         n_samples = 1
-    print(f"featurization={args.featurization} num_samples={n_samples}",
-          flush=True)
+    # Print the EFFECTIVE protocol, not the requested one. Two runs are only
+    # comparable if these lines match, and the raw argument is not enough to
+    # tell -- --recycling 3 means a different number of trunk passes to
+    # different backends, so the resolved value is what goes in the log.
+    raw_recycling = args.recycling + RECYCLING_OFFSET.get(args.model, 0)
+    print(
+        f"PROTOCOL model={args.model} condition={args.condition} "
+        f"featurization={args.featurization} num_samples={n_samples} "
+        f"trunk_passes={args.recycling} (recycling_steps={raw_recycling}) "
+        f"sampling_steps="
+        f"{'n/a' if args.model == 'af2' else args.sampling_steps} "
+        f"target_msa={args.target_msa} seed={args.seed}",
+        flush=True,
+    )
+    if raw_recycling < 1:
+        raise SystemExit(
+            f"--recycling {args.recycling} leaves {args.model} with "
+            f"recycling_steps={raw_recycling}; it must run at least one pass."
+        )
     if args.af2_model_idx is not None and args.model == "af2":
         if args.af2_replicate != "msa_seed":
             raise SystemExit(
