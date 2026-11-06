@@ -352,6 +352,16 @@ class DistogramRadiusOfGyration(LossTerm):
     ):
         # TODO: Why RMSE instead of MAE?
         binder_len = sequence.shape[0]
+        # Rg^2 = (1 / 2N^2) sum_ij d_ij^2, so the MEAN squared pair distance is
+        # 2 Rg^2 and its square root is sqrt(2) * Rg, not Rg. Without the /2
+        # this quantity was sqrt(2) too large while rg_th below is a genuine
+        # radius of gyration, so the term effectively demanded
+        # Rg < rg_th / sqrt(2) and charged a large constant penalty -- the ELU
+        # is linear with slope 1 out there -- against binders that were already
+        # the right size. At binder_len 75, rg_th is 11.5 A and the uncorrected
+        # quantity read ~16.2 A for a true Rg of ~11.5 A: unearned compaction
+        # pressure, which is why this term screened ANTI-correlated with design
+        # quality across the 168-design set.
         dgram_radius_of_gyration = jnp.sqrt(
             jnp.fill_diagonal(
                 (
@@ -361,6 +371,7 @@ class DistogramRadiusOfGyration(LossTerm):
                 0,
                 inplace=False,
             ).mean()
+            / 2.0
             + 1e-8
         )
 
@@ -385,11 +396,20 @@ class MAERadiusOfGyration(LossTerm):
     ):
         binder_len = sequence.shape[0]
 
+        # NOTE: this is the MEAN PAIRWISE DISTANCE, not a radius of gyration --
+        # the bins are not squared here, so no factor converts it to Rg exactly
+        # (the ratio depends on the shape: ~1.33 for a uniform sphere). It is
+        # nonetheless compared against rg_th, a genuine Rg, so the threshold is
+        # met at the wrong size. Unlike DistogramRadiusOfGyration above there is
+        # no single correct constant to apply, so this is left as it stands and
+        # flagged instead: pass an explicit target_radius calibrated for a mean
+        # pairwise distance, or prefer DistogramRadiusOfGyration. This term also
+        # screened ANTI-correlated with design quality over the 168-design set.
         dgram_radius_of_gyration = jnp.fill_diagonal(
             (
                 jax.nn.softmax(output.distogram_logits)[:binder_len, :binder_len]
                 * (output.distogram_bins[None, None, :])
-            ).sum(-1),  # expected squared distance
+            ).sum(-1),  # expected distance (NOT squared)
             0,
             inplace=False,
         ).mean()
