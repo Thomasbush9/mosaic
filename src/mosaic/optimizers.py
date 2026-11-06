@@ -308,9 +308,19 @@ def simplex_APGM(
 
         if value < best_val and not np.isnan(value):
             best_val = value
-            best_x = (
-                x  # this isn't exactly right, because we evaluated loss at v, not x.
-            )
+            # Store the point whose loss we actually measured. `value` is the
+            # loss at `v`; the two lines above have already advanced `x` to
+            # `x_new`, so the previous code banked the iterate one gradient
+            # step PAST the point it was scoring, and `best_val` described
+            # neither of them. During the sharp stage `scale > 1` sharpens
+            # inside that same step, so the discarded distance is not small.
+            #
+            # `v` is an extrapolation and is not re-projected, so it can carry
+            # entries a few 1e-4 below zero. That is not a new exposure: the
+            # loop already evaluates the loss at this same unprojected `v` on
+            # every step, so returning it hands back exactly the kind of point
+            # the loss has consumed all along.
+            best_x = v
 
         average_nnz = (
             (x > 0.01).sum(-1).mean()
@@ -420,7 +430,11 @@ def batched_simplex_APGM(
 
         better = (np.array(values) < np.array(best_vals)) & ~np.isnan(values)
         best_vals = jnp.where(jnp.array(better), values, best_vals)
-        best_x = jnp.where(jnp.array(better)[:, None, None], x, best_x)
+        # `v`, not `x`, for the same reason as simplex_APGM above: `values` was
+        # measured at `v`, and `x` has already been advanced to `x_new` two
+        # lines earlier, so banking `x` stores a point one gradient step past
+        # the one that scored well and leaves `best_vals` describing neither.
+        best_x = jnp.where(jnp.array(better)[:, None, None], v, best_x)
 
         for i in range(B):
             aux_i = jax.tree.map(lambda v: v[i], auxs)
