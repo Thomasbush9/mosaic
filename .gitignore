@@ -30,3 +30,9 @@ webapp/streamlit.log
 # file was open in vim.
 *.swp
 *.swo
+
+# Lustre leaves byte-identical copies of a file next to it with an OST-error
+# suffix when a stripe is briefly unreadable (e.g.
+# src/mosaic/alphafold/model/utils.py.ost000a-unreadable). They are not edits
+# and must never be committed -- same reason as the *.swp entries above.
+*.ost*-unreadable
