@@ -83,6 +83,10 @@ bind_cache boltz     .boltz
 bind_cache alphafold .alphafold
 bind_cache protenix  .protenix
 bind_cache hf        .cache/huggingface
+# Promera's MSA pairing reads a tinyprot taxonomy LMDB from ~/.cache/tinyprot.
+# Without it JPromeraModel raises "Taxonomy database not found" on every design
+# -- after the GPU is allocated and the model is loaded, so it costs a job.
+bind_cache tinyprot  .cache/tinyprot
 
 # jopenfold3 reads ~/.openfold3/jax/of3.{skeleton.pkl,eqx} — a plain default
 # argument to OpenFold3.load(), with no env var to redirect it. jopenfold3

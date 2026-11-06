@@ -42,13 +42,16 @@ sequences:"""
         if not chain.use_msa:
             raw += """
         msa: empty"""
-        elif chain.msa_path is not None:
+        else:
             # See boltz2.chain_yaml — a local .a3m, with its header rewritten to
-            # match this chain id so boltz actually keys the MSA to it.
-            from ..msa import a3m_for_chain
+            # match this chain id so boltz actually keys the MSA to it, and
+            # require_msa gating the no-key case that would hit the server.
+            from ..msa import a3m_for_chain, require_msa
 
-            raw += f"""
-        msa: {a3m_for_chain(chain.msa_path, chain_name)}"""
+            a3m = require_msa(chain, model="Boltz-1")
+            if a3m is not None:
+                raw += f"""
+        msa: {a3m_for_chain(a3m, chain_name)}"""
 
         return raw
 

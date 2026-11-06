@@ -53,6 +53,7 @@ from mosaic.losses.of3 import (
 
 from mosaic.common import LinearCombination, LossTerm
 from mosaic.losses.structure_prediction import IPTMLoss
+from mosaic.msa import as_of3_a3m, require_msa
 from mosaic.structure_prediction import (
     PolymerType,
     StructurePrediction,
@@ -335,30 +336,39 @@ def _build_query_set(chains: list[TargetChain], seed: int = 0):
 
 
 def _compute_msas(query_set, chains: list[TargetChain], msa_dir: Path):
-    """Compute MSAs: ColabFold for chains with use_msa=True, dummy for the rest.
+    """Attach an MSA to every chain that asked for one; dummy for the rest.
 
-    To avoid submitting binder/placeholder chains to ColabFold, we build a
-    separate query set with only the MSA-needing chains, run ColabFold on
-    that, then copy the resulting MSA paths back to the full query set.
+    A chain with ``msa_path`` set is served from that local ``.a3m``, which is
+    the same file AF2 and Boltz read — see ``mosaic.msa.require_msa`` for why
+    that has to be true rather than merely usual. Only chains that reach here
+    without one are submitted to ColabFold, and ``require_msa`` will already
+    have raised unless the caller opted in to that.
+
+    Chains are batched into a subset query set before submission so binder and
+    placeholder chains are never sent to the server.
     """
 
     msa_dir.mkdir(parents=True, exist_ok=True)
     settings = MsaComputationSettings(msa_output_directory=msa_dir)
 
-    msa_chains = [tc for tc in chains if tc.use_msa]
-    if not msa_chains:
-        return augment_main_msa_with_query_sequence(query_set, settings)
-
-    # Build a subset query set with only MSA-needing chains
-    msa_query_set = _build_query_set(msa_chains)
-    msa_query_set = preprocess_colabfold_msas(msa_query_set, settings)
-
-    # Map ColabFold results back: match by sequence
     msa_by_seq = {}
-    for q in msa_query_set.queries.values():
-        for c in q.chains:
-            if c.main_msa_file_paths is not None:
-                msa_by_seq[c.sequence] = c.main_msa_file_paths
+    remote_chains = []
+    for tc in chains:
+        a3m = require_msa(tc, model="OF3")
+        if a3m is not None:
+            msa_by_seq[tc.sequence] = [as_of3_a3m(a3m)]
+        elif tc.use_msa:
+            remote_chains.append(tc)
+
+    if remote_chains:
+        msa_query_set = _build_query_set(remote_chains)
+        msa_query_set = preprocess_colabfold_msas(msa_query_set, settings)
+
+        # Map ColabFold results back: match by sequence
+        for q in msa_query_set.queries.values():
+            for c in q.chains:
+                if c.main_msa_file_paths is not None:
+                    msa_by_seq[c.sequence] = c.main_msa_file_paths
 
     for q in query_set.queries.values():
         for c in q.chains:

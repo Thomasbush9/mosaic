@@ -17,6 +17,7 @@ from mosaic.losses.protenix import (
     set_binder_sequence,
 )
 from mosaic.losses.structure_prediction import IPTMLoss
+from mosaic.msa import as_protenix_msa_dir, require_msa
 from mosaic.structure_prediction import (
     PolymerType,
     StructurePrediction,
@@ -59,16 +60,25 @@ class Protenix(StructurePredictionModel):
                     "Protenix interface only supports Protein chains. Manually build features for more complex targets. "
                 )
 
-        features_dict, atom_array, _ = featurize(
-            [
+        # A chain with msa_path is staged as a precomputed_msa_dir so Protenix
+        # reads the same local .a3m as AF2 and Boltz instead of running its own
+        # MMseqs2 search; require_msa refuses the search unless opted in.
+        chain_inputs = []
+        for c in chains:
+            a3m = require_msa(c, model="Protenix")
+            chain_inputs.append(
                 ChainInput(
                     sequence=c.sequence,
                     compute_msa=c.use_msa,
+                    precomputed_msa_dir=(
+                        None if a3m is None
+                        else str(as_protenix_msa_dir(a3m, c.sequence))
+                    ),
                     template=c.template_chain,
                 )
-                for c in chains
-            ]
-        )
+            )
+
+        features_dict, atom_array, _ = featurize(chain_inputs)
 
         return features_dict, atom_array
 

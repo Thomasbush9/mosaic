@@ -9,6 +9,7 @@ import numpy as np
 from jaxtyping import Array, Float, PyTree
 
 from mosaic.losses.structure_prediction import IPTMLoss
+from mosaic.msa import ALLOW_SERVER_ENV, require_msa
 from mosaic.structure_prediction import (
     PolymerType,
     StructurePrediction,
@@ -67,6 +68,22 @@ class JPromeraModel(StructurePredictionModel):
 
         schema = _schema(chains)
         struct0 = Structure.from_schema(schema)
+        # Promera resolves MSAs through tinyprot's own sequence-keyed cache, so
+        # it cannot yet be pointed at a caller-supplied .a3m the way the other
+        # backends can. require_msa still runs, so asking for an MSA without a
+        # msa_path fails here as it does everywhere else; supplying one fails
+        # loudly rather than being silently replaced by a server search. Fixing
+        # it means writing the a3m into tinyprot's cache under its key.
+        for c in chains:
+            if require_msa(c, model="Promera") is not None:
+                raise NotImplementedError(
+                    "Promera cannot read TargetChain.msa_path — it would run a "
+                    "ColabFold search instead, so this chain would not see the "
+                    "same alignment as the other backends. Use another model, "
+                    f"or set {ALLOW_SERVER_ENV}=1 with msa_path unset to accept "
+                    "Promera's own MSA."
+                )
+
         want = {
             cid: struct0.chains[cid]
             for cid, c in zip(struct0.chains, chains)

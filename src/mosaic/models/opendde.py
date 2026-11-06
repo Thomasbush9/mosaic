@@ -35,6 +35,7 @@ from mosaic.losses.opendde import (
     set_binder_sequence,
 )
 from mosaic.losses.structure_prediction import IPTMLoss
+from mosaic.msa import require_msa
 from mosaic.structure_prediction import (
     PolymerType,
     StructurePrediction,
@@ -135,7 +136,12 @@ def _build_spec(chains: list[TargetChain], *, name: str = "design", seed: int = 
             raise NotImplementedError("OpenDDE wrapper does not support templates.")
         chain = {"sequence": c.sequence, "count": 1}
         if c.use_msa:
-            chain["unpairedMsaPath"] = _target_a3m(c.sequence)
+            # Prefer the caller's local .a3m so OpenDDE reads the same alignment
+            # as every other backend; _target_a3m is only the opted-in fallback.
+            a3m = require_msa(c, model="OpenDDE")
+            chain["unpairedMsaPath"] = (
+                str(a3m) if a3m is not None else _target_a3m(c.sequence)
+            )
         sequences.append({"proteinChain": chain})
     return [{"name": name, "modelSeeds": [seed], "sequences": sequences}]
 

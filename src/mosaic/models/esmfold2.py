@@ -55,6 +55,7 @@ from mosaic.losses.esmfold2 import (
 )
 from mosaic.common import TOKENS
 from mosaic.losses.structure_prediction import IPTMLoss
+from mosaic.msa import require_msa
 from mosaic.structure_prediction import (
     PolymerType,
     StructurePrediction,
@@ -73,13 +74,22 @@ _DEFAULT_MSA_CACHE = Path(
 ).expanduser()
 
 
-def _fetch_msa(sequence: str, max_sequences: int = 8192):
-    """Query the ColabFold MSA server (via boltz's MMseqs2 client) for an a3m
-    and return an `esm.utils.msa.MSA`. Cached by sequence hash under
-    `MOSAIC_MSA_CACHE` so repeated featurizations skip the network.
+def _fetch_msa(sequence: str, max_sequences: int = 8192, msa_path=None):
+    """Return an `esm.utils.msa.MSA` for `sequence`.
+
+    `msa_path` (a local `.a3m`, normally from `mosaic.msa.require_msa`) is read
+    directly, so ESMFold2 sees the same alignment as every other backend. Only
+    without one does this query the ColabFold MSA server, caching by sequence
+    hash under `MOSAIC_MSA_CACHE` so repeated featurizations skip the network.
     """
     from boltz.data.msa.mmseqs2 import run_mmseqs2
     from esm.utils.msa import MSA
+
+    if msa_path is not None:
+        return MSA.from_a3m(
+            path=str(msa_path), remove_insertions=True,
+            max_sequences=max_sequences,
+        )
 
     _DEFAULT_MSA_CACHE.mkdir(parents=True, exist_ok=True)
     seq_hash = hashlib.sha256(sequence.encode("utf-8")).hexdigest()[:16]
@@ -202,7 +212,11 @@ def _featurize(
         # The Fast checkpoint has no MSA encoder but still uses query row 0 as
         # the `profile` aggregate, so passing the MSA through is correct in
         # both modes.
-        msa = _fetch_msa(c.sequence) if c.use_msa else None
+        msa = (
+            _fetch_msa(c.sequence, msa_path=require_msa(c, model="ESMFold2"))
+            if c.use_msa
+            else None
+        )
         proteins.append(
             ProteinInput(id=chain_letters[i], sequence=seq, msa=msa)
         )
